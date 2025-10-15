@@ -2,525 +2,580 @@ import os
 import argparse
 import json
 import re
-
 import gradio as gr
-
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--data_file', type=str, default="/root/projects/object_attributes_annotation_tool/test.json")
 parser.add_argument('--base_path', type=str, default="/mnt/data/GRScenes-100/instances/renderings")
 parser.add_argument('--port', type=int, default=7800)
+parser.add_argument('--uid', type=str, default="default_user", help="用户唯一标识符，用于多人标注")
 args = parser.parse_args()
 
 DATA_FILE = args.data_file
 BASE_PATH = args.base_path
 SERVER_PORT = args.port
+USER_UID = args.uid
 
-# Load data
+# -------------------------
+# Utils
+# -------------------------
 def load_data():
     with open(DATA_FILE, 'r') as f:
         data_list = json.load(f)
-    
-    # Convert list of dicts to single dict
     data_dict = {}
     for item in data_list:
         data_dict.update(item)
-    
     return data_dict
 
 def parse_attributes(value_data):
-    """Parse the JSON string from the value"""
-    # Handle new format with annotated field
     if isinstance(value_data, dict):
         value_str = value_data.get('data', '')
         annotated = value_data.get('annotated', False)
+        uid = value_data.get('uid', '')  # 获取uid
     else:
-        # Old format compatibility
         value_str = value_data
         annotated = False
-    
-    # Extract JSON from markdown code block
+        uid = ''
     json_match = re.search(r'```json\s*\n(.*?)\n```', value_str, re.DOTALL)
     if json_match:
-        json_str = json_match.group(1)
-        attrs = json.loads(json_str)
+        try:
+            attrs = json.loads(json_match.group(1))
+        except Exception:
+            attrs = {}
         attrs['annotated'] = annotated
+        attrs['uid'] = uid
         return attrs
-    return {'annotated': annotated}
+    return {'annotated': annotated, 'uid': uid}
 
 def build_gif_path(key):
-    """Build GIF path from key"""
-    # Split key by '-' to get folder structure
     parts = key.split('-')
-    
     if len(parts) >= 4:
-        # commercial-articulated-basket-02f563c8720e209efec34199dd999a53
-        # -> commercial_objects/articulated/basket/thumbnails/merged_views/02f563c8720e209efec34199dd999a53/
-        type_folder = f"{parts[0]}_objects"  # commercial -> commercial_objects
-        subtype_folder = parts[1]  # articulated
-        category_folder = parts[2]  # basket
-        model_id = parts[3]  # 02f563c8720e209efec34199dd999a53
-        
-        gif_path = os.path.join(
-            BASE_PATH,
-            type_folder,
-            subtype_folder,
-            category_folder,
-            "thumbnails/merged_views",
-            model_id,
-            f"{model_id}_original.gif"
+        type_folder = f"{parts[0]}_objects"
+        subtype_folder = parts[1]
+        category_folder = parts[2]
+        model_id = parts[3]
+        return os.path.join(
+            BASE_PATH, type_folder, subtype_folder, category_folder,
+            "thumbnails/merged_views", model_id, f"{model_id}_original.gif"
         )
-        return gif_path
     return None
 
 def save_data(data_dict):
-    """Save data back to file"""
-    # Create backup before saving
     import shutil
     from datetime import datetime
-    
     if os.path.exists(DATA_FILE):
         backup_dir = os.path.join(os.path.dirname(DATA_FILE), "backups")
         os.makedirs(backup_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_file = os.path.join(backup_dir, f"test_backup_{timestamp}.json")
-        shutil.copy2(DATA_FILE, backup_file)
-        print(f"📦 已创建备份: {backup_file}")
-    
-    # Convert back to list of dicts format
-    data_list = [{key: value} for key, value in data_dict.items()]
-    
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        shutil.copy2(DATA_FILE, os.path.join(backup_dir, f"test_backup_{ts}.json"))
+    data_list = [{k: v} for k, v in data_dict.items()]
     with open(DATA_FILE, 'w') as f:
         json.dump(data_list, f, indent=4, ensure_ascii=False)
-    
     print(f"💾 已保存到: {DATA_FILE}")
 
-def start_annotation(server_port):
-    
-    # Load initial data
-    DATA_DICT = load_data()
-    KEYS_LIST = list(DATA_DICT.keys())
-    
-    # Debug: Print loaded data
-    print("=" * 60)
-    print(f"📂 加载的数据文件: {DATA_FILE}")
-    print(f"📊 总共加载了 {len(DATA_DICT)} 个模型")
-    print(f"🔑 模型列表:")
-    for i, key in enumerate(KEYS_LIST, 1):
-        gif_path = build_gif_path(key)
-        gif_exists = "✅" if gif_path and os.path.exists(gif_path) else "❌"
-        print(f"   {i}. {key}")
-        print(f"      GIF路径: {gif_path}")
-        print(f"      文件存在: {gif_exists}")
-    print("=" * 60)
-    
-    # Track modifications
-    current_modifications = {}
-    
-    def get_key_parts(key):
-        """Parse key into parts for dropdowns"""
-        parts = key.split('-')
-        if len(parts) >= 4:
-            return {
-                'type': parts[0],
-                'subtype': parts[1],
-                'category': parts[2],
-                'model_id': parts[3]
-            }
-        return {}
-    
-    def get_all_unique_parts():
-        """Get all unique values for each part"""
-        types = set()
-        subtypes = set()
-        categories = set()
-        model_ids = set()
-        
-        for key in KEYS_LIST:
-            parts = get_key_parts(key)
-            if parts:
-                types.add(parts['type'])
-                subtypes.add(parts['subtype'])
-                categories.add(parts['category'])
-                model_ids.add(parts['model_id'])
-        
-        return {
-            'types': sorted(list(types)),
-            'subtypes': sorted(list(subtypes)),
-            'categories': sorted(list(categories)),
-            'model_ids': sorted(list(model_ids))
-        }
-    
-    def build_key_from_parts(type_val, subtype_val, category_val, model_id_val):
-        """Build key from dropdown values"""
-        if all([type_val, subtype_val, category_val, model_id_val]):
-            return f"{type_val}-{subtype_val}-{category_val}-{model_id_val}"
-        return None
-    
-    def load_model_data(key):
-        """Load GIF and attributes for a model"""
-        if not key or key not in DATA_DICT:
-            return None, "", "", "", "", "", "", False
-        
-        # Get GIF path
-        gif_path = build_gif_path(key)
-        
-        # Parse attributes
-        attrs = parse_attributes(DATA_DICT[key])
-        
-        category = attrs.get('category', '')
-        description = attrs.get('description', '')
-        material = attrs.get('material', '')
-        dimensions = attrs.get('dimensions', '')
-        mass = attrs.get('mass', '')
-        placement = attrs.get('placement', '')
-        annotated = attrs.get('annotated', False)
-        
-        if os.path.exists(gif_path):
-            return gif_path, category, description, material, dimensions, mass, placement, annotated
-        else:
-            return None, category, description, material, dimensions, mass, placement, annotated
-    
-    def update_current_key(type_val, subtype_val, category_val, model_id_val):
-        """Update current key based on dropdown selections"""
-        key = build_key_from_parts(type_val, subtype_val, category_val, model_id_val)
-        if key and key in KEYS_LIST:
-            return gr.update(value=key)
-        return gr.update()
-    
-    def load_data_for_key(current_key):
-        """Load all data when key changes"""
-        if not current_key:
-            return None, "", "", "", "", "", "", gr.update(value=False), ""
-        
-        gif_path, category, description, material, dimensions, mass, placement, annotated = load_model_data(current_key)
-        
-        # Create annotation status HTML (compact version with fixed height to match textbox)
-        if annotated:
-            status_html = '''
-            <div style='background-color: #d4edda; border: 2px solid #28a745; border-radius: 5px; padding: 10px 15px; text-align: center; display: flex; align-items: center; justify-content: center; height: 58px;'>
-                <span style='color: #155724; font-size: 16px; font-weight: bold;'>✅ 已标注</span>
-            </div>
-            '''
-        else:
-            status_html = '''
-            <div style='background-color: #f8d7da; border: 2px solid #dc3545; border-radius: 5px; padding: 10px 15px; text-align: center; display: flex; align-items: center; justify-content: center; height: 58px;'>
-                <span style='color: #721c24; font-size: 16px; font-weight: bold;'>❌ 未标注</span>
-            </div>
-            '''
-        
-        # Parse key parts for dropdowns
-        parts = get_key_parts(current_key)
-        
-        return (
-            gif_path,
-            category,
-            description,
-            material,
-            dimensions,
-            mass,
-            placement,
-            gr.update(value=False),  # Reset modified flag
-            status_html  # Annotation status
-        )
-    
-    def check_modifications(current_key, category, description, material, dimensions, mass, placement):
-        """Check if current data has been modified"""
-        if not current_key or current_key not in DATA_DICT:
-            return False
-        
-        original_attrs = parse_attributes(DATA_DICT[current_key])
-        
-        return (
-            category != original_attrs.get('category', '') or
-            description != original_attrs.get('description', '') or
-            material != original_attrs.get('material', '') or
-            dimensions != original_attrs.get('dimensions', '') or
-            mass != original_attrs.get('mass', '') or
-            placement != original_attrs.get('placement', '')
-        )
-    
-    def save_current(current_key, category, description, material, dimensions, mass, placement):
-        """Save current modifications"""
-        if not current_key:
-            return gr.update(), ""
-        
-        # Build new JSON string
-        new_attrs = {
-            "category": category,
-            "description": description,
-            "material": material,
-            "dimensions": dimensions,
-            "mass": mass,
-            "placement": placement
-        }
-        
-        # Format as the new format with annotated field
-        json_str = json.dumps(new_attrs, indent=2, ensure_ascii=False)
-        DATA_DICT[current_key] = {
-            "annotated": True,  # Mark as annotated when saved
-            "data": f"```json\n{json_str}\n```"
-        }
-        
-        # Save to file
-        save_data(DATA_DICT)
-        
-        # Update status display to green (compact version with better alignment)
-        status_html = '''
-        <div style='background-color: #d4edda; border: 2px solid #28a745; border-radius: 5px; padding: 10px 15px; text-align: center; display: flex; align-items: center; justify-content: center; height: 58px;'>
-            <span style='color: #155724; font-size: 16px; font-weight: bold;'>✅ 已标注</span>
-        </div>
+def render_status_html(annotated: bool):
+    # 使用单层div，背景色直接填充
+    if annotated:
+        return '''
+        <div style="
+            height: 100%;
+            min-height: 56px;
+            background-color: #d4edda;
+            border: 2px solid #c3e6cb;
+            padding: 8px;
+            font-size: 14px;
+            text-align: center;
+            font-weight: 600;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-sizing: border-box;
+            color: #155724;
+        ">✅ 已标注</div>
         '''
-        
-        return gr.update(value=False), status_html
+    else:
+        return '''
+        <div style="
+            height: 100%;
+            min-height: 56px;
+            background-color: #f8d7da;
+            border: 2px solid #f5c6cb;
+            padding: 8px;
+            font-size: 14px;
+            text-align: center;
+            font-weight: 600;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-sizing: border-box;
+            color: #721c24;
+        ">❌ 未标注</div>
+        '''
+
+# -------------------------
+# Main App
+# -------------------------
+def start_annotation(server_port):
+    ALL_DATA = load_data()
     
-    def next_model(current_key, category, description, material, dimensions, mass, placement):
-        """Go to next model"""
-        if not current_key or current_key not in KEYS_LIST:
-            return gr.update(), gr.update(visible=False)
-        
-        # Check for modifications
-        if check_modifications(current_key, category, description, material, dimensions, mass, placement):
-            return gr.update(), gr.update(visible=True)
-        
-        # Go to next
-        current_index = KEYS_LIST.index(current_key)
-        next_index = (current_index + 1) % len(KEYS_LIST)
-        next_key = KEYS_LIST[next_index]
-        
-        return gr.update(value=next_key), gr.update(visible=False)
+    # 过滤数据：只保留当前用户可见的数据（自己的uid + 无uid的）
+    DATA_DICT = {}
+    for key, value in ALL_DATA.items():
+        attrs = parse_attributes(value)
+        item_uid = attrs.get('uid', '')
+        # 如果没有uid或者uid是当前用户，则可见
+        if not item_uid or item_uid == USER_UID:
+            DATA_DICT[key] = value
     
-    def prev_model(current_key, category, description, material, dimensions, mass, placement):
-        """Go to previous model"""
-        if not current_key or current_key not in KEYS_LIST:
-            return gr.update(), gr.update(visible=False)
-        
-        # Check for modifications
-        if check_modifications(current_key, category, description, material, dimensions, mass, placement):
-            return gr.update(), gr.update(visible=True)
-        
-        # Go to previous
-        current_index = KEYS_LIST.index(current_key)
-        prev_index = (current_index - 1) % len(KEYS_LIST)
-        prev_key = KEYS_LIST[prev_index]
-        
-        return gr.update(value=prev_key), gr.update(visible=False)
+    KEYS_LIST = list(DATA_DICT.keys())
+    total_count = len(ALL_DATA)
+    visible_count = len(DATA_DICT)
     
-    def confirm_save_and_continue(current_key, category, description, material, dimensions, mass, placement, direction):
-        """Save and continue to next/prev"""
-        # Save first
-        save_current(current_key, category, description, material, dimensions, mass, placement)
+    print("="*60)
+    print(f"👤 当前用户: {USER_UID}")
+    print(f"📂 加载的数据文件: {DATA_FILE}")
+    print(f"📊 数据总数: {total_count} 个模型")
+    print(f"👁️  可见数据: {visible_count} 个模型 (你的 + 未标注的)")
+    print(f"🔒 被其他用户标注: {total_count - visible_count} 个模型")
+    print("🔑 示例:", KEYS_LIST[:3])
+    print("="*60)
+
+    def get_parts(k):
+        p = k.split('-')
+        return {'type': p[0], 'subtype': p[1], 'category': p[2], 'model_id': p[3]} if len(p)>=4 else {}
+
+    def get_uniques():
+        t,s,c,m = set(),set(),set(),set()
+        for k in KEYS_LIST:
+            p = get_parts(k)
+            if p: t.add(p['type']); s.add(p['subtype']); c.add(p['category']); m.add(p['model_id'])
+        return dict(types=sorted(t),subtypes=sorted(s),categories=sorted(c),model_ids=sorted(m))
+
+    def build_key(t,st,cat,mid):
+        return f"{t}-{st}-{cat}-{mid}" if all([t,st,cat,mid]) else None
+
+    def load_all_data(k):
+        """
+        统一的数据加载函数，返回所有需要更新的组件
+        返回顺序：
+        1. key (模型检索框)
+        2. gif (物体渲染视频)
+        3-8. ci, di, mi, di2, ma, pl (6个属性框)
+        9. is_mod (修改标记)
+        10. status (已标注状态)
+        11. user_info (用户信息栏)
+        12-15. t, st, c, mid (4个下拉框)
+        """
+        if not k or k not in DATA_DICT:
+            # 空数据状态
+            return (
+                gr.update(value=""),  # key
+                None,  # gif
+                "","","","","","",  # 6个属性框
+                gr.update(value=False),  # is_mod
+                render_status_html(False),  # status
+                render_user_info(),  # user_info
+                gr.update(value=""),gr.update(value=""),gr.update(value=""),gr.update(value="")  # 4个下拉框
+            )
         
-        # Then navigate
-        current_index = KEYS_LIST.index(current_key)
-        if direction == "next":
-            next_index = (current_index + 1) % len(KEYS_LIST)
-        else:  # prev
-            next_index = (current_index - 1) % len(KEYS_LIST)
+        # 加载GIF和属性
+        gif = build_gif_path(k)
+        a = parse_attributes(DATA_DICT[k])
         
-        next_key = KEYS_LIST[next_index]
+        # 解析key的各个部分
+        parts = get_parts(k)
         
-        return gr.update(value=next_key), gr.update(visible=False)
+        return (
+            gr.update(value=k),  # key - 更新模型检索框
+            gif if gif and os.path.exists(gif) else None,  # gif
+            a.get('category',''),  # ci
+            a.get('description',''),  # di
+            a.get('material',''),  # mi
+            a.get('dimensions',''),  # di2
+            a.get('mass',''),  # ma
+            a.get('placement',''),  # pl
+            gr.update(value=False),  # is_mod - 重置修改标记
+            render_status_html(a.get('annotated',False)),  # status
+            render_user_info(),  # user_info
+            gr.update(value=parts.get('type','')),  # t
+            gr.update(value=parts.get('subtype','')),  # st
+            gr.update(value=parts.get('category','')),  # c
+            gr.update(value=parts.get('model_id',''))  # mid
+        )
+
+    def modified(k,c,d,m,dim,ma,p):
+        if not k or k not in DATA_DICT: return False
+        o=parse_attributes(DATA_DICT[k])
+        return any([c!=o.get('category',''),d!=o.get('description',''),m!=o.get('material',''),
+                    dim!=o.get('dimensions',''),ma!=o.get('mass',''),p!=o.get('placement','')])
+
+    def save_one(k,c,d,m,dim,ma,p):
+        if not k: return gr.update(),render_status_html(False),gr.update()
+        # 保存数据，添加uid标识
+        saved_data = {
+            "annotated": True,
+            "uid": USER_UID,  # 记录标注者的UID
+            "data": f"```json\n{json.dumps(dict(category=c,description=d,material=m,dimensions=dim,mass=ma,placement=p),indent=2,ensure_ascii=False)}\n```"
+        }
+        DATA_DICT[k] = saved_data
+        ALL_DATA[k] = saved_data  # 同时更新总数据
+        save_data(ALL_DATA)  # 保存完整数据
+        return gr.update(value=False),render_status_html(True),render_user_info()
+
+    def neighbor(k,dir):
+        if not k or k not in KEYS_LIST: return ""
+        i=KEYS_LIST.index(k)
+        return KEYS_LIST[(i+1)%len(KEYS_LIST)] if dir=="next" else KEYS_LIST[(i-1)%len(KEYS_LIST)]
+
+    uniq=get_uniques()
     
-    def confirm_continue_without_save(current_key, direction):
-        """Continue without saving"""
-        if not current_key or current_key not in KEYS_LIST:
-            return gr.update(), gr.update(visible=False)
+    # 计算统计信息的函数
+    def get_stats():
+        """计算当前用户的数据统计"""
+        visible = 0
+        others = 0
+        for value in ALL_DATA.values():
+            attrs = parse_attributes(value)
+            item_uid = attrs.get('uid', '')
+            if not item_uid or item_uid == USER_UID:
+                visible += 1
+            else:
+                others += 1
+        return visible, others, len(ALL_DATA)
+    
+    # 生成用户信息栏HTML的函数
+    def render_user_info():
+        """生成用户信息栏的HTML"""
+        visible, others, _ = get_stats()
+        return f"""
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                    color: white; 
+                    padding: 12px 20px; 
+                    border-radius: 8px; 
+                    text-align: center; 
+                    margin-bottom: 15px;
+                    font-size: 16px;
+                    font-weight: 600;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
+            👤 当前用户：<span style="font-size: 18px; text-decoration: underline;">{USER_UID}</span> 
+            &nbsp;&nbsp;|&nbsp;&nbsp; 
+            📊 可见数据：{visible} 个 (你的标注 + 未标注)
+            &nbsp;&nbsp;|&nbsp;&nbsp;
+            🔒 其他用户：{others} 个
+        </div>
+        """
+    
+    with gr.Blocks(title="物体属性检查工具", css="""
+        /* 搜索行：模型检索和状态框高度对齐 */
+        #search_row {
+            display: flex !important;
+            align-items: stretch !important;
+        }
+        #search_row .gradio-column {
+            display: flex !important;
+            align-items: stretch !important;
+        }
+        #search_row .gradio-textbox {
+            display: flex !important;
+            flex-direction: column !important;
+        }
+        #search_row .gradio-html {
+            flex: 1 !important;
+            display: flex !important;
+            flex-direction: column !important;
+        }
+        #search_row .gradio-html > div {
+            flex: 1 !important;
+            display: flex !important;
+        }
         
-        current_index = KEYS_LIST.index(current_key)
-        if direction == "next":
-            next_index = (current_index + 1) % len(KEYS_LIST)
-        else:  # prev
-            next_index = (current_index - 1) % len(KEYS_LIST)
+        /* 主内容行的两个列等高 */
+        #main_content_row {
+            display: flex !important;
+            align-items: stretch !important;
+        }
+        #main_content_row > .gradio-column {
+            display: flex !important;
+            flex-direction: column !important;
+        }
         
-        next_key = KEYS_LIST[next_index]
+        /* GIF容器样式：图片居中显示，超出则缩放 */
+        #gif_container .gradio-image {
+            height: 580px !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+        }
+        #gif_container .gradio-image img {
+            max-width: 100% !important;
+            max-height: 100% !important;
+            width: auto !important;
+            height: auto !important;
+            object-fit: contain !important;
+            margin: auto !important;
+        }
         
-        return gr.update(value=next_key), gr.update(visible=False)
-    
-    def cancel_navigation():
-        """Cancel navigation"""
-        return gr.update(visible=False)
-    
-    def mark_modified():
-        """Mark as modified when user edits"""
-        return gr.update(value=True)
-    
-    # Get unique parts for dropdowns
-    unique_parts = get_all_unique_parts()
-    
-    # GUI Structure
-    with gr.Blocks(title="物体属性检查工具") as demo:
+        /* 右侧信息列：移除背景，让textbox自动填充空间 */
+        #info_column {
+            height: 580px !important;
+            display: flex !important;
+            flex-direction: column !important;
+            gap: 4px !important;
+        }
+        #info_column .gradio-textbox {
+            flex: 1 1 0 !important;
+            min-height: 0 !important;
+            display: flex !important;
+            flex-direction: column !important;
+        }
+        #info_column .gradio-textbox textarea {
+            flex: 1 !important;
+            min-height: 0 !important;
+        }
+        /* 让description输入框占据2倍空间 */
+        #info_column > div:nth-child(2) {
+            flex: 2 1 0 !important;
+        }
+        
+        #confirm_modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.6);
+            z-index: 9999;
+            display: flex !important;
+            align-items: center;
+            justify-content: center;
+            backdrop-filter: blur(3px);
+            animation: fadeIn 0.15s ease;
+        }
+
+        /* 弹窗主体卡片 */
+        #confirm_card {
+            width: min(400px, 80vw);
+            max-height: min(280px, 45vh);
+            overflow-y: auto;
+            background: #fff;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.25);
+            padding: 28px 24px 24px;
+            animation: slideIn 0.2s ease;
+        }
+
+        /* 标题文字 */
+        #confirm_card h2 {
+            font-size: 20px !important;
+            margin: 0 0 10px;
+            color: #222;
+            text-align: center;
+            font-weight: 600;
+            line-height: 1.3;
+        }
+
+        /* 正文文字 */
+        #confirm_card p {
+            font-size: 20px !important;
+            margin: 0 0 10px;
+            color: #222;
+            text-align: center;
+            font-weight: 600;
+            line-height: 1.3;
+        }
+
+        /* 🔥 关键修复：强制覆盖按钮样式 */
+        #confirm_card button,
+        #confirm_card .gradio-button,
+        #confirm_card .gradio-button > span {
+            font-size: 14px !important;
+            font-weight: 600 !important;
+            min-height: 48px !important;
+            padding: 12px 20px !important;
+            border-radius: 8px !important;
+            line-height: 1.2 !important;
+        }
+
+        /* 按钮行/列间距 */
+        #confirm_card .gradio-row {
+            gap: 14px !important;
+            margin-bottom: 12px;
+        }
+        #confirm_card .gradio-column {
+            gap: 12px !important;
+        }
+
+        /* 动画：淡入 + 滑入 */
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        @keyframes slideIn {
+            from { transform: translateY(-30px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+
+        /* 📱 小屏自适应 */
+        @media (max-width: 600px) {
+            #confirm_card {
+                width: 92vw;
+                max-height: 65vh;
+            }
+            #confirm_card h2 { 
+                font-size: 14px !important; 
+            }
+            #confirm_card p { 
+                font-size: 14px !important; 
+            }
+            #confirm_card button,
+            #confirm_card .gradio-button,
+            #confirm_card .gradio-button > span { 
+                font-size: 14px !important;
+                min-height: 44px !important;
+            }
+        }
+    """) as demo:
+
         gr.Markdown("# 物体属性检查工具")
         
-        # Hidden state to track if modified
-        is_modified = gr.State(value=False)
-        navigation_direction = gr.State(value="next")
-        
-        # Dropdown selectors
+        # 动态用户信息栏
+        user_info = gr.HTML(render_user_info())
+
+        is_mod = gr.State(value=False)
+        nav_dir = gr.State(value="next")
+
         with gr.Row(equal_height=True):
-            type_dropdown = gr.Dropdown(choices=unique_parts['types'], label="类型 (Type)")
-            subtype_dropdown = gr.Dropdown(choices=unique_parts['subtypes'], label="子类型 (Subtype)")
-            category_dropdown = gr.Dropdown(choices=unique_parts['categories'], label="类别 (Category)")
-            model_id_dropdown = gr.Dropdown(choices=unique_parts['model_ids'], label="模型ID (Model ID)")
-        
-        # Current key and status in one row
+            t=gr.Dropdown(choices=uniq['types'],label="类型 (Type)")
+            st=gr.Dropdown(choices=uniq['subtypes'],label="子类型 (Subtype)")
+            c=gr.Dropdown(choices=uniq['categories'],label="类别 (Category)")
+            mid=gr.Dropdown(choices=uniq['model_ids'],label="模型ID (Model ID)")
+
+        with gr.Row(equal_height=True, elem_id="search_row"):
+            key=gr.Textbox(label="模型检索",interactive=True,placeholder="输入模型ID快速检索...",scale=3,container=True)
+            with gr.Column(scale=1,min_width=120):
+                status=gr.HTML(render_status_html(False))
+
+        with gr.Row(elem_id="main_content_row"):
+            with gr.Column(scale=1, elem_id="gif_container"):
+                gif=gr.Image(label="物体渲染视频",height=580,container=True,show_download_button=False)
+            with gr.Column(scale=1, elem_id="info_column"):
+                ci=gr.Textbox(label="Category (类别)",lines=1)
+                di=gr.Textbox(label="Description (描述)",lines=3)
+                mi=gr.Textbox(label="Material (材质)",lines=1)
+                di2=gr.Textbox(label="Dimensions (尺寸)",lines=1)
+                ma=gr.Textbox(label="Mass (质量)",lines=1)
+                pl=gr.Textbox(label="Placement (放置位置)",lines=1)
+
         with gr.Row(equal_height=True):
-            with gr.Column(scale=3):
-                current_key = gr.Textbox(label="当前模型Key", interactive=False, container=True)
-            with gr.Column(scale=1, min_width=150):
-                gr.HTML("<div style='margin-bottom: 8px; font-size: 14px; color: #666;'>标注状态</div>")
-                annotation_status = gr.HTML(value="", label=None)
+            prev=gr.Button("⬅️ 上一个",variant="secondary",size="lg")
+            save=gr.Button("💾 保存",variant="primary",size="lg")
+            nxt=gr.Button("➡️ 下一个",variant="secondary",size="lg")
+
+        # 伪Modal整块
+        with gr.Column(visible=False,elem_id="confirm_modal") as confirm:
+            with gr.Column(elem_id="confirm_card"):
+                gr.HTML("<h2>⚠️ 有未保存的修改</h2><p>是否继续？</p>")
+                with gr.Row():
+                    save_next=gr.Button("💾 保存继续",variant="primary",size="sm")
+                    cancel=gr.Button("❌ 取消",variant="secondary",size="sm")
+                skip=gr.Button("⚠️ 放弃更改",variant="stop",size="sm")
+
+        # 定义统一的输出组件列表（顺序必须与load_all_data返回值一致）
+        ALL_OUTPUTS = [key, gif, ci, di, mi, di2, ma, pl, is_mod, status, user_info, t, st, c, mid]
         
-        # Main content
-        with gr.Row():
-            # Left: GIF display
-            with gr.Column(scale=1):
-                gif_output = gr.Image(label="物体渲染视频", value=None, height=600)
+        # 事件绑定
+        def on_dropdown_change(t,st,c,mid):
+            """下拉框改变时，只更新模型检索框"""
+            k=build_key(t,st,c,mid)
+            if k and k in KEYS_LIST:
+                return gr.update(value=k)
+            return gr.update(value="")
+        
+        for dd in (t,st,c,mid):
+            dd.change(on_dropdown_change,inputs=[t,st,c,mid],outputs=[key])
+
+        # 搜索功能：支持输入模型ID或完整Key
+        def on_search(search_text):
+            """搜索框回车时，加载完整数据"""
+            if not search_text:
+                return load_all_data("")
             
-            # Right: Attribute fields
-            with gr.Column(scale=1):
-                category_input = gr.Textbox(label="Category (类别)", lines=1)
-                description_input = gr.Textbox(label="Description (描述)", lines=5)
-                material_input = gr.Textbox(label="Material (材质)", lines=1)
-                dimensions_input = gr.Textbox(label="Dimensions (尺寸)", lines=1, placeholder="例如: 0.30 * 0.20 * 0.25")
-                mass_input = gr.Textbox(label="Mass (质量)", lines=1, placeholder="例如: 0.5")
-                placement_input = gr.Textbox(label="Placement (放置位置)", lines=1)
+            # 精确匹配完整Key
+            if search_text in KEYS_LIST:
+                return load_all_data(search_text)
+            
+            # 模糊匹配：查找包含该ID的Key
+            matched = [k for k in KEYS_LIST if search_text in k]
+            if matched:
+                return load_all_data(matched[0])
+            
+            # 无匹配
+            return load_all_data("")
+
+        # Enter键触发搜索
+        key.submit(on_search, inputs=[key], outputs=ALL_OUTPUTS)
         
-        # Navigation and save buttons
-        with gr.Row(equal_height=True):
-            prev_button = gr.Button("⬅️ 上一个", variant="secondary", size="lg")
-            save_button = gr.Button("💾 保存", variant="primary", size="lg")
-            next_button = gr.Button("➡️ 下一个", variant="secondary", size="lg")
-        
-        # Confirmation dialog (使用 Row 和 Column 实现兼容所有版本)
-        with gr.Column(visible=False) as confirm_dialog:
-            gr.HTML(
-                """
-                <div style='background-color: #fff3cd; border: 3px solid #ffc107; border-radius: 10px; padding: 20px; text-align: center; margin: 10px 0;'>
-                <h2 style='color: #856404; margin-top: 0;'>⚠️ 您有未保存的修改，是否要继续？</h2>
-                <p style='color: #856404; font-size: 16px;'>请选择以下操作：</p>
-                </div>
-                """
-            )
-            with gr.Row():
-                save_and_continue_btn = gr.Button("💾 保存并继续", variant="primary")
-                cancel_btn = gr.Button("❌ 取消", variant="secondary")
-            with gr.Row():
-                continue_without_save_btn = gr.Button("⚠️ 不保存并继续")
-        
-        # Event handlers
-        
-        # Update current key when dropdowns change
-        def on_dropdown_change(type_val, subtype_val, category_val, model_id_val):
-            key = build_key_from_parts(type_val, subtype_val, category_val, model_id_val)
-            if key and key in KEYS_LIST:
-                return gr.update(value=key)
+        # 失焦时自动补全完整Key
+        def on_key_blur(search_text):
+            if search_text in KEYS_LIST:
+                return gr.update(value=search_text)
+            matched = [k for k in KEYS_LIST if search_text in k]
+            if matched:
+                return gr.update(value=matched[0])
             return gr.update()
         
-        type_dropdown.change(
-            on_dropdown_change,
-            inputs=[type_dropdown, subtype_dropdown, category_dropdown, model_id_dropdown],
-            outputs=[current_key]
-        )
-        subtype_dropdown.change(
-            on_dropdown_change,
-            inputs=[type_dropdown, subtype_dropdown, category_dropdown, model_id_dropdown],
-            outputs=[current_key]
-        )
-        category_dropdown.change(
-            on_dropdown_change,
-            inputs=[type_dropdown, subtype_dropdown, category_dropdown, model_id_dropdown],
-            outputs=[current_key]
-        )
-        model_id_dropdown.change(
-            on_dropdown_change,
-            inputs=[type_dropdown, subtype_dropdown, category_dropdown, model_id_dropdown],
-            outputs=[current_key]
-        )
+        key.blur(on_key_blur, inputs=[key], outputs=[key])
         
-        # Load data when current key changes
-        current_key.change(
-            load_data_for_key,
-            inputs=[current_key],
-            outputs=[gif_output, category_input, description_input, material_input, 
-                    dimensions_input, mass_input, placement_input, is_modified, annotation_status]
-        )
+        # 模型检索框内容变化时，加载完整数据
+        def on_key_change(k):
+            """模型检索框内容变化时，更新所有组件"""
+            return load_all_data(k)
         
-        # Mark as modified when fields change
-        category_input.change(mark_modified, inputs=[], outputs=[is_modified])
-        description_input.change(mark_modified, inputs=[], outputs=[is_modified])
-        material_input.change(mark_modified, inputs=[], outputs=[is_modified])
-        dimensions_input.change(mark_modified, inputs=[], outputs=[is_modified])
-        mass_input.change(mark_modified, inputs=[], outputs=[is_modified])
-        placement_input.change(mark_modified, inputs=[], outputs=[is_modified])
-        
-        # Save button
-        save_button.click(
-            save_current,
-            inputs=[current_key, category_input, description_input, material_input,
-                   dimensions_input, mass_input, placement_input],
-            outputs=[is_modified, annotation_status]
-        )
-        
-        # Next button
-        def on_next_click(current_key, category, description, material, dimensions, mass, placement):
-            result = next_model(current_key, category, description, material, dimensions, mass, placement)
-            return result[0], result[1], gr.update(value="next")
-        
-        next_button.click(
-            on_next_click,
-            inputs=[current_key, category_input, description_input, material_input,
-                   dimensions_input, mass_input, placement_input],
-            outputs=[current_key, confirm_dialog, navigation_direction]
-        )
-        
-        # Prev button
-        def on_prev_click(current_key, category, description, material, dimensions, mass, placement):
-            result = prev_model(current_key, category, description, material, dimensions, mass, placement)
-            return result[0], result[1], gr.update(value="prev")
-        
-        prev_button.click(
-            on_prev_click,
-            inputs=[current_key, category_input, description_input, material_input,
-                   dimensions_input, mass_input, placement_input],
-            outputs=[current_key, confirm_dialog, navigation_direction]
-        )
-        
-        # Confirmation dialog buttons
-        save_and_continue_btn.click(
-            confirm_save_and_continue,
-            inputs=[current_key, category_input, description_input, material_input,
-                   dimensions_input, mass_input, placement_input, navigation_direction],
-            outputs=[current_key, confirm_dialog]
-        )
-        
-        continue_without_save_btn.click(
-            confirm_continue_without_save,
-            inputs=[current_key, navigation_direction],
-            outputs=[current_key, confirm_dialog]
-        )
-        
-        cancel_btn.click(
-            cancel_navigation,
-            inputs=[],
-            outputs=[confirm_dialog]
-        )
-        
-        # Load first model on start
-        demo.load(
-            lambda: KEYS_LIST[0] if KEYS_LIST else "",
-            inputs=[],
-            outputs=[current_key]
-        )
-    
+        key.change(on_key_change, inputs=[key], outputs=ALL_OUTPUTS)
+
+        # 输入框变化时，标记为已修改
+        def mark(): 
+            return gr.update(value=True)
+        for f in (ci,di,mi,di2,ma,pl): 
+            f.change(mark, inputs=[], outputs=[is_mod])
+
+        # 保存按钮 - 只更新状态和用户信息
+        save.click(save_one, inputs=[key,ci,di,mi,di2,ma,pl], outputs=[is_mod,status,user_info])
+
+        # 导航函数：上一个/下一个
+        def on_nav(k,c,d,m,dim,ma,p,direction):
+            """导航到上一个或下一个，如果有修改则弹出确认框"""
+            if modified(k,c,d,m,dim,ma,p):
+                # 有修改，显示确认弹窗
+                return gr.update(), gr.update(visible=True), gr.update(value=direction)
+            # 无修改，直接跳转（只更新key，触发key.change加载完整数据）
+            next_key = neighbor(k, direction)
+            return gr.update(value=next_key), gr.update(visible=False), gr.update(value=direction)
+
+        nxt.click(on_nav, inputs=[key,ci,di,mi,di2,ma,pl,gr.State("next")], outputs=[key,confirm,nav_dir])
+        prev.click(on_nav, inputs=[key,ci,di,mi,di2,ma,pl,gr.State("prev")], outputs=[key,confirm,nav_dir])
+
+        # 保存并继续
+        def on_save_and_go(k,c,d,m,dim,ma,p,direction):
+            """保存当前数据并跳转到下一个"""
+            save_one(k,c,d,m,dim,ma,p)
+            next_key = neighbor(k, direction)
+            return gr.update(value=next_key), gr.update(visible=False), gr.update(value=False), render_user_info()
+        save_next.click(on_save_and_go, inputs=[key,ci,di,mi,di2,ma,pl,nav_dir], outputs=[key,confirm,is_mod,user_info])
+
+        # 放弃修改并继续
+        def on_skip_and_go(k, direction): 
+            next_key = neighbor(k, direction)
+            return gr.update(value=next_key), gr.update(visible=False)
+        skip.click(on_skip_and_go, inputs=[key,nav_dir], outputs=[key,confirm])
+
+        # 取消弹窗
+        cancel.click(lambda: gr.update(visible=False), inputs=[], outputs=[confirm])
+
+        # 页面加载时，自动加载第一个数据
+        demo.load(lambda: KEYS_LIST[0] if KEYS_LIST else "", inputs=[], outputs=[key])
+
     demo.queue()
-    demo.launch(
-        server_name='0.0.0.0', 
-        server_port=server_port,
-        allowed_paths=[BASE_PATH]  # 允许访问 GIF 文件所在的目录
-    )
+    demo.launch(server_name='0.0.0.0',server_port=server_port,allowed_paths=[BASE_PATH])
 
-
-if __name__ == "__main__":
+if __name__=="__main__":
     start_annotation(SERVER_PORT)
-
