@@ -32,10 +32,12 @@ def parse_attributes(value_data):
         value_str = value_data.get('data', '')
         annotated = value_data.get('annotated', False)
         uid = value_data.get('uid', '')  # 获取uid
+        score = value_data.get('score', 1)  # 获取score，默认为1
     else:
         value_str = value_data
         annotated = False
         uid = ''
+        score = 1
     json_match = re.search(r'```json\s*\n(.*?)\n```', value_str, re.DOTALL)
     if json_match:
         try:
@@ -44,8 +46,9 @@ def parse_attributes(value_data):
             attrs = {}
         attrs['annotated'] = annotated
         attrs['uid'] = uid
+        attrs['score'] = score
         return attrs
-    return {'annotated': annotated, 'uid': uid}
+    return {'annotated': annotated, 'uid': uid, 'score': score}
 
 def build_gif_path(key):
     parts = key.split('-')
@@ -162,18 +165,20 @@ def start_annotation(server_port):
         返回顺序：
         1. key (模型检索框)
         2. gif (物体渲染视频)
-        3-8. ci, di, mi, di2, ma, pl (6个属性框)
-        9. is_mod (修改标记)
-        10. status (已标注状态)
-        11. user_info (用户信息栏)
-        12-15. t, st, c, mid (4个下拉框)
+        3-7. ci, di, mi, di2, pl (5个属性框)
+        8-12. chk_ci, chk_di, chk_mi, chk_di2, chk_pl (5个勾选框)
+        13. is_mod (修改标记)
+        14. status (已标注状态)
+        15. user_info (用户信息栏)
+        16-19. t, st, c, mid (4个下拉框)
         """
         if not k or k not in DATA_DICT:
             # 空数据状态
             return (
                 gr.update(value=""),  # key
                 None,  # gif
-                "","","","","","",  # 6个属性框
+                "","","","","",  # 5个属性框
+                False,False,False,False,False,  # 5个勾选框
                 gr.update(value=False),  # is_mod
                 render_status_html(False),  # status
                 render_user_info(),  # user_info
@@ -194,8 +199,12 @@ def start_annotation(server_port):
             a.get('description',''),  # di
             a.get('material',''),  # mi
             a.get('dimensions',''),  # di2
-            a.get('mass',''),  # ma
             a.get('placement',''),  # pl
+            a.get('chk_category',False),  # chk_ci
+            a.get('chk_description',False),  # chk_di
+            a.get('chk_material',False),  # chk_mi
+            a.get('chk_dimensions',False),  # chk_di2
+            a.get('chk_placement',False),  # chk_pl
             gr.update(value=False),  # is_mod - 重置修改标记
             render_status_html(a.get('annotated',False)),  # status
             render_user_info(),  # user_info
@@ -205,19 +214,25 @@ def start_annotation(server_port):
             gr.update(value=parts.get('model_id',''))  # mid
         )
 
-    def modified(k,c,d,m,dim,ma,p):
+    def modified(k,c,d,m,dim,p,chk_c,chk_d,chk_m,chk_dim,chk_p):
         if not k or k not in DATA_DICT: return False
         o=parse_attributes(DATA_DICT[k])
         return any([c!=o.get('category',''),d!=o.get('description',''),m!=o.get('material',''),
-                    dim!=o.get('dimensions',''),ma!=o.get('mass',''),p!=o.get('placement','')])
+                    dim!=o.get('dimensions',''),p!=o.get('placement',''),
+                    chk_c!=o.get('chk_category',False),chk_d!=o.get('chk_description',False),
+                    chk_m!=o.get('chk_material',False),chk_dim!=o.get('chk_dimensions',False),
+                    chk_p!=o.get('chk_placement',False)])
 
-    def save_one(k,c,d,m,dim,ma,p):
+    def save_one(k,c,d,m,dim,p,chk_c,chk_d,chk_m,chk_dim,chk_p):
         if not k: return gr.update(),render_status_html(False),gr.update()
-        # 保存数据，添加uid标识
+        # 计算score：如果任意一个勾选框被选中，score=0；否则score=1
+        score = 0 if any([chk_c,chk_d,chk_m,chk_dim,chk_p]) else 1
+        # 保存数据，添加uid标识和score
         saved_data = {
             "annotated": True,
             "uid": USER_UID,  # 记录标注者的UID
-            "data": f"```json\n{json.dumps(dict(category=c,description=d,material=m,dimensions=dim,mass=ma,placement=p),indent=2,ensure_ascii=False)}\n```"
+            "score": score,  # 保存score
+            "data": f"```json\n{json.dumps(dict(category=c,description=d,material=m,dimensions=dim,placement=p,chk_category=chk_c,chk_description=chk_d,chk_material=chk_m,chk_dimensions=chk_dim,chk_placement=chk_p),indent=2,ensure_ascii=False)}\n```"
         }
         DATA_DICT[k] = saved_data
         ALL_DATA[k] = saved_data  # 同时更新总数据
@@ -324,11 +339,20 @@ def start_annotation(server_port):
             flex-direction: column !important;
             gap: 4px !important;
         }
+        #info_column > .gradio-column {
+            display: flex !important;
+            flex-direction: column !important;
+            width: 100% !important;
+        }
+        #info_column .gradio-checkbox {
+            margin-bottom: 0px !important;
+        }
         #info_column .gradio-textbox {
             flex: 1 1 0 !important;
             min-height: 0 !important;
             display: flex !important;
             flex-direction: column !important;
+            width: 100% !important;
         }
         #info_column .gradio-textbox textarea {
             flex: 1 !important;
@@ -458,12 +482,21 @@ def start_annotation(server_port):
             with gr.Column(scale=1, elem_id="gif_container"):
                 gif=gr.Image(label="物体渲染视频",height=580,container=True,show_download_button=False)
             with gr.Column(scale=1, elem_id="info_column"):
-                ci=gr.Textbox(label="Category (类别)",lines=1)
-                di=gr.Textbox(label="Description (描述)",lines=3)
-                mi=gr.Textbox(label="Material (材质)",lines=1)
-                di2=gr.Textbox(label="Dimensions (尺寸)",lines=1)
-                ma=gr.Textbox(label="Mass (质量)",lines=1)
-                pl=gr.Textbox(label="Placement (放置位置)",lines=1)
+                with gr.Column():
+                    chk_ci=gr.Checkbox(label="✗ Category (类别)",value=False,container=False)
+                    ci=gr.Textbox(label="",lines=1,show_label=False)
+                with gr.Column():
+                    chk_di=gr.Checkbox(label="✗ Description (描述)",value=False,container=False)
+                    di=gr.Textbox(label="",lines=3,show_label=False)
+                with gr.Column():
+                    chk_mi=gr.Checkbox(label="✗ Material (材质)",value=False,container=False)
+                    mi=gr.Textbox(label="",lines=1,show_label=False)
+                with gr.Column():
+                    chk_di2=gr.Checkbox(label="✗ Dimensions (尺寸)",value=False,container=False)
+                    di2=gr.Textbox(label="",lines=1,show_label=False)
+                with gr.Column():
+                    chk_pl=gr.Checkbox(label="✗ Placement (放置位置)",value=False,container=False)
+                    pl=gr.Textbox(label="",lines=1,show_label=False)
 
         with gr.Row(equal_height=True):
             prev=gr.Button("⬅️ 上一个",variant="secondary",size="lg")
@@ -480,7 +513,7 @@ def start_annotation(server_port):
                 skip=gr.Button("⚠️ 放弃更改",variant="stop",size="sm")
 
         # 定义统一的输出组件列表（顺序必须与load_all_data返回值一致）
-        ALL_OUTPUTS = [key, gif, ci, di, mi, di2, ma, pl, is_mod, status, user_info, t, st, c, mid]
+        ALL_OUTPUTS = [key, gif, ci, di, mi, di2, pl, chk_ci, chk_di, chk_mi, chk_di2, chk_pl, is_mod, status, user_info, t, st, c, mid]
         
         # 事件绑定
         def on_dropdown_change(t,st,c,mid):
@@ -532,35 +565,35 @@ def start_annotation(server_port):
         
         key.change(on_key_change, inputs=[key], outputs=ALL_OUTPUTS)
 
-        # 输入框变化时，标记为已修改
+        # 输入框和勾选框变化时，标记为已修改
         def mark(): 
             return gr.update(value=True)
-        for f in (ci,di,mi,di2,ma,pl): 
+        for f in (ci,di,mi,di2,pl,chk_ci,chk_di,chk_mi,chk_di2,chk_pl): 
             f.change(mark, inputs=[], outputs=[is_mod])
 
         # 保存按钮 - 只更新状态和用户信息
-        save.click(save_one, inputs=[key,ci,di,mi,di2,ma,pl], outputs=[is_mod,status,user_info])
+        save.click(save_one, inputs=[key,ci,di,mi,di2,pl,chk_ci,chk_di,chk_mi,chk_di2,chk_pl], outputs=[is_mod,status,user_info])
 
         # 导航函数：上一个/下一个
-        def on_nav(k,c,d,m,dim,ma,p,direction):
+        def on_nav(k,c,d,m,dim,p,chk_c,chk_d,chk_m,chk_dim,chk_p,direction):
             """导航到上一个或下一个，如果有修改则弹出确认框"""
-            if modified(k,c,d,m,dim,ma,p):
+            if modified(k,c,d,m,dim,p,chk_c,chk_d,chk_m,chk_dim,chk_p):
                 # 有修改，显示确认弹窗
                 return gr.update(), gr.update(visible=True), gr.update(value=direction)
             # 无修改，直接跳转（只更新key，触发key.change加载完整数据）
             next_key = neighbor(k, direction)
             return gr.update(value=next_key), gr.update(visible=False), gr.update(value=direction)
 
-        nxt.click(on_nav, inputs=[key,ci,di,mi,di2,ma,pl,gr.State("next")], outputs=[key,confirm,nav_dir])
-        prev.click(on_nav, inputs=[key,ci,di,mi,di2,ma,pl,gr.State("prev")], outputs=[key,confirm,nav_dir])
+        nxt.click(on_nav, inputs=[key,ci,di,mi,di2,pl,chk_ci,chk_di,chk_mi,chk_di2,chk_pl,gr.State("next")], outputs=[key,confirm,nav_dir])
+        prev.click(on_nav, inputs=[key,ci,di,mi,di2,pl,chk_ci,chk_di,chk_mi,chk_di2,chk_pl,gr.State("prev")], outputs=[key,confirm,nav_dir])
 
         # 保存并继续
-        def on_save_and_go(k,c,d,m,dim,ma,p,direction):
+        def on_save_and_go(k,c,d,m,dim,p,chk_c,chk_d,chk_m,chk_dim,chk_p,direction):
             """保存当前数据并跳转到下一个"""
-            save_one(k,c,d,m,dim,ma,p)
+            save_one(k,c,d,m,dim,p,chk_c,chk_d,chk_m,chk_dim,chk_p)
             next_key = neighbor(k, direction)
             return gr.update(value=next_key), gr.update(visible=False), gr.update(value=False), render_user_info()
-        save_next.click(on_save_and_go, inputs=[key,ci,di,mi,di2,ma,pl,nav_dir], outputs=[key,confirm,is_mod,user_info])
+        save_next.click(on_save_and_go, inputs=[key,ci,di,mi,di2,pl,chk_ci,chk_di,chk_mi,chk_di2,chk_pl,nav_dir], outputs=[key,confirm,is_mod,user_info])
 
         # 放弃修改并继续
         def on_skip_and_go(k, direction): 
