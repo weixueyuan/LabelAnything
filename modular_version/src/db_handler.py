@@ -78,6 +78,66 @@ class DatabaseHandler:
             print(f"❌ 获取统计失败: {e}")
             return {'total': 0, 'annotated': 0, 'pending': 0}
     
+    def export_to_jsonl(self, output_dir: str = "exports") -> str:
+        """
+        导出数据库数据为JSONL文件
+        
+        Args:
+            output_dir: 输出目录，默认为 "exports"
+            
+        Returns:
+            导出文件的路径
+        """
+        import os
+        from datetime import datetime
+        
+        # 创建导出目录
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # 生成文件名（带日期时间戳）
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"export_{timestamp}.jsonl"
+        filepath = os.path.join(output_dir, filename)
+        
+        try:
+            # 获取所有数据
+            annotations = self.session.query(Annotation).all()
+            
+            # 写入JSONL文件
+            with open(filepath, 'w', encoding='utf-8') as f:
+                for ann in annotations:
+                    # 构建完整数据（包含元数据）
+                    full_data = {
+                        'annotated': ann.annotated,
+                        'uid': ann.uid,
+                        'score': ann.score,
+                    }
+                    
+                    # 合并业务数据
+                    if ann.data:
+                        full_data.update(ann.data)
+                    
+                    # 处理 placement：如果是字符串，转换为数组（JSONL格式）
+                    if 'placement' in full_data:
+                        if isinstance(full_data['placement'], str):
+                            # 字符串转数组
+                            full_data['placement'] = [x.strip() for x in full_data['placement'].split(',') if x.strip()]
+                        elif isinstance(full_data['placement'], list):
+                            # 已经是数组，保持不变
+                            pass
+                    
+                    # 写入 JSONL 格式：{"model_id": {数据}}
+                    line_obj = {ann.model_id: full_data}
+                    f.write(json.dumps(line_obj, ensure_ascii=False) + '\n')
+            
+            print(f"✅ 导出完成: {filepath}")
+            print(f"   共导出 {len(annotations)} 条记录")
+            return filepath
+            
+        except Exception as e:
+            print(f"❌ 导出失败: {e}")
+            raise
+    
     def close(self):
         """关闭数据库连接"""
         if hasattr(self, 'session'):

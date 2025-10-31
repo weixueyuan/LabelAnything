@@ -25,16 +25,16 @@ from routes import ROUTES, DEFAULT_PORT
 class TaskManager:
     """任务管理器"""
     
-    def __init__(self, task_config, user_uid="default_user"):
+    def __init__(self, task_config, user_uid="default_user", debug=False):
         self.task_config = task_config
         self.user_uid = user_uid
         self.task_name = task_config['task']
+        self.debug = debug
         
         # 加载UI配置
         config_module = importlib.import_module(f"ui_configs.{self.task_name}_config")
         self.field_configs = config_module.FIELD_CONFIG
         self.ui_config = config_module.UI_CONFIG
-        self.path_config = config_module.PATH_CONFIG
         self.task_info = config_module.TASK_INFO
         self.custom_css = getattr(config_module, 'CUSTOM_CSS', '')
         
@@ -46,50 +46,39 @@ class TaskManager:
         self._load_data()
     
     def _load_data(self):
-        """加载数据（支持数据库模式和 JSONL 模式）"""
-        # 从配置中获取 JSONL 文件路径（一个配置对应一个 JSONL 文件）
-        jsonl_file = self.path_config.get('jsonl_file')
-        
-        # 模式选择：JSONL 优先，数据库次之
-        if jsonl_file and os.path.exists(jsonl_file):
-            # JSONL 模式（直接读取配置文件指定的 JSONL 文件）
-            print(f"📄 JSONL 模式: {jsonl_file}")
-            self.data_handler = JSONLHandler(jsonl_file)
-            self.data_source = 'jsonl'
-        elif jsonl_file:
-            # 配置了 JSONL 文件但不存在
-            print(f"⚠️  配置的 JSONL 文件不存在: {jsonl_file}")
-            print(f"   尝试使用数据库模式...")
+        """加载数据（支持数据库模式和 JSONL debug 模式）"""
+        # Debug 模式：使用 test.jsonl
+        if self.debug:
+            jsonl_file = 'test.jsonl'
+            if os.path.exists(jsonl_file):
+                print(f"🐛 Debug 模式: {jsonl_file}")
+                self.data_handler = JSONLHandler(jsonl_file)
+                self.data_source = 'jsonl'
+            else:
+                print(f"⚠️  Debug 模式：未找到 {jsonl_file}")
+                print(f"   创建空的测试文件...")
+                # 创建空的 test.jsonl
+                with open(jsonl_file, 'w', encoding='utf-8'):
+                    pass
+                self.data_handler = JSONLHandler(jsonl_file)
+                self.data_source = 'jsonl'
+                self.all_data = {}
+                self.visible_keys = []
+                print(f"   ✓ 已创建空的 {jsonl_file}")
+                return
+        else:
+            # 正常模式：使用数据库
             if os.path.exists(self.db_path):
                 print(f"🗄️  数据库模式: {self.db_path}")
                 self.data_handler = DatabaseHandler(self.db_path)
                 self.data_source = 'database'
             else:
-                print(f"❌ 未找到数据源")
-                print(f"   - JSONL: {jsonl_file} (不存在)")
-                print(f"   - 数据库: {self.db_path} (不存在)")
+                print(f"❌ 未找到数据库: {self.db_path}")
+                print(f"   请先导入数据: python -m importers.annotation_importer")
                 self.data_handler = None
                 self.all_data = {}
                 self.visible_keys = []
                 return
-        elif os.path.exists(self.db_path):
-            # 未配置 JSONL 文件，使用数据库模式
-            print(f"🗄️  数据库模式: {self.db_path}")
-            self.data_handler = DatabaseHandler(self.db_path)
-            self.data_source = 'database'
-        else:
-            # 无数据源
-            print(f"⚠️  未找到数据源")
-            if jsonl_file:
-                print(f"   - JSONL: {jsonl_file} (不存在)")
-            else:
-                print(f"   - JSONL: 未配置")
-            print(f"   - 数据库: {self.db_path} (不存在)")
-            print(f"   请在 PATH_CONFIG 中配置 'jsonl_file' 或运行: python tools/import_to_db.py")
-            self.data_handler = None
-            self.all_data = {}
-            self.visible_keys = []
-            return
         
         # 加载所有数据
         self.all_data = self.data_handler.load_data()
@@ -164,6 +153,14 @@ class TaskManager:
                 next_btn = gr.Button("➡️ 下一个", size="lg")
             
             progress = gr.Textbox(label="进度", interactive=False)
+            
+            # 导出按钮（仅在正常模式下显示）
+            export_btn = None
+            export_status = None
+            if not self.debug and self.data_source == 'database':
+                with gr.Row():
+                    export_btn = gr.Button("📤 导出为JSONL", variant="secondary", size="lg")
+                    export_status = gr.Textbox(label="导出状态", interactive=False, visible=False)
             
             # 确认弹窗
             with gr.Column(visible=False, elem_id="confirm_modal") as confirm_modal:
@@ -395,6 +392,26 @@ class TaskManager:
                 lambda: gr.update(visible=False),
                 outputs=[confirm_modal]
             )
+            
+            # 导出按钮事件（仅在正常模式下）
+            if not self.debug and self.data_source == 'database':
+                def export_data():
+                    """导出数据库数据为JSONL文件"""
+                    try:
+                        if hasattr(self.data_handler, 'export_to_jsonl'):
+                            filepath = self.data_handler.export_to_jsonl()
+                            filename = os.path.basename(filepath)
+                            return gr.update(value=f"✅ 导出成功: {filename}", visible=True)
+                        else:
+                            return gr.update(value="❌ 导出功能不可用（当前数据源不支持）", visible=True)
+                    except Exception as e:
+                        return gr.update(value=f"❌ 导出失败: {str(e)}", visible=True)
+                
+                export_btn.click(
+                    export_data,
+                    inputs=[],
+                    outputs=[export_status]
+                )
         
         return demo
     
@@ -435,12 +452,43 @@ class TaskManager:
     
     def _render_user_info(self, visible, others):
         return f'<div style="background:linear-gradient(135deg,#667eea,#764ba2);color:white;padding:12px;border-radius:8px;text-align:center;">👤 用户：{self.user_uid} | 📊 可见：{visible} | 🔒 其他：{others}</div>'
+    
+    def get_allowed_paths(self):
+        """
+        从数据库数据中提取允许访问的基础路径（用于Gradio的allowed_paths）
+        
+        从image_url字段中提取第一个路径段，适配不同项目的路径结构
+        """
+        # 默认路径（如果数据库为空）
+        default_path = "/mnt"
+        
+        if not self.all_data:
+            return [default_path]
+        
+        # 从第一个数据项的image_url中提取基础路径
+        first_item = list(self.all_data.values())[0]
+        attrs = self.data_handler.parse_item(first_item)
+        image_url = attrs.get('image_url', '')
+        
+        if image_url and image_url.startswith('/'):
+            # 提取第一个路径段（根目录下的第一级目录）
+            # 例如: /mnt/data/... -> /mnt
+            #      /data/images/... -> /data
+            #      /home/user/... -> /home
+            parts = image_url.split('/')
+            if len(parts) >= 2 and parts[1]:
+                base_path = f"/{parts[1]}"
+                return [base_path]
+        
+        # 如果没有找到有效路径，使用默认值
+        return [default_path]
 
 
 def main():
     parser = argparse.ArgumentParser(description='标注工具')
     parser.add_argument('--uid', type=str, default='default_user', help='用户ID')
     parser.add_argument('--port', type=int, default=DEFAULT_PORT, help='端口')
+    parser.add_argument('-d', '--debug', action='store_true', help='Debug模式：使用test.jsonl文件')
     args = parser.parse_args()
     
     # 目前只有一个任务
@@ -451,14 +499,15 @@ def main():
     print(f"{'='*60}")
     print(f"用户: {args.uid}")
     print(f"端口: {args.port}")
+    print(f"模式: {'🐛 Debug' if args.debug else '🗄️  正常'}")
     print(f"{'='*60}\n")
     
     # 创建任务
-    manager = TaskManager(task_config, args.uid)
+    manager = TaskManager(task_config, args.uid, debug=args.debug)
     demo = manager.build_interface()
     
-    # 获取允许访问的路径（GIF文件所在的基础路径）
-    allowed_paths = [manager.path_config['base_path']]
+    # 获取允许访问的路径（从数据库数据中提取基础路径）
+    allowed_paths = manager.get_allowed_paths()
     
     # 启动
     demo.launch(server_port=args.port, server_name="0.0.0.0", allowed_paths=allowed_paths)
