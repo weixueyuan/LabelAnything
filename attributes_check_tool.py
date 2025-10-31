@@ -5,7 +5,7 @@ import re
 import gradio as gr
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--data_file', type=str, default="/root/projects/object_attributes_annotation_tool/test.json")
+parser.add_argument('--data_file', type=str, default="/root/projects/object_attributes_annotation_tool/merged_attributes.jsonl")
 parser.add_argument('--base_path', type=str, default="/mnt/data/GRScenes-100/instances/renderings")
 parser.add_argument('--port', type=int, default=7800)
 parser.add_argument('--uid', type=str, default="default_user", help="用户唯一标识符，用于多人标注")
@@ -20,35 +20,62 @@ USER_UID = args.uid
 # Utils
 # -------------------------
 def load_data():
-    with open(DATA_FILE, 'r') as f:
-        data_list = json.load(f)
+    """加载JSONL格式的数据文件"""
     data_dict = {}
-    for item in data_list:
-        data_dict.update(item)
+    with open(DATA_FILE, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                # 每行是一个完整的JSON对象
+                item = json.loads(line)
+                data_dict.update(item)
     return data_dict
 
 def parse_attributes(value_data):
-    if isinstance(value_data, dict):
+    """解析属性数据，支持原始格式和已标注格式"""
+    if not isinstance(value_data, dict):
+        return {'annotated': False, 'uid': '', 'score': 1}
+    
+    # 检查是否是已标注的数据（包含'data'字段）
+    if 'data' in value_data:
+        # 已标注格式：{"annotated": True, "uid": "...", "score": 1, "data": "```json\n{...}\n```"}
         value_str = value_data.get('data', '')
         annotated = value_data.get('annotated', False)
-        uid = value_data.get('uid', '')  # 获取uid
-        score = value_data.get('score', 1)  # 获取score，默认为1
-    else:
-        value_str = value_data
-        annotated = False
-        uid = ''
-        score = 1
-    json_match = re.search(r'```json\s*\n(.*?)\n```', value_str, re.DOTALL)
-    if json_match:
-        try:
-            attrs = json.loads(json_match.group(1))
-        except Exception:
+        uid = value_data.get('uid', '')
+        score = value_data.get('score', 1)
+        
+        json_match = re.search(r'```json\s*\n(.*?)\n```', value_str, re.DOTALL)
+        if json_match:
+            try:
+                attrs = json.loads(json_match.group(1))
+            except Exception:
+                attrs = {}
+        else:
             attrs = {}
+        
         attrs['annotated'] = annotated
         attrs['uid'] = uid
         attrs['score'] = score
         return attrs
-    return {'annotated': annotated, 'uid': uid, 'score': score}
+    
+    # 原始格式：直接是属性对象 {"category": "...", "description": "...", ...}
+    attrs = dict(value_data)
+    
+    # 处理placement字段：如果是数组，转换为逗号分隔的字符串
+    if 'placement' in attrs and isinstance(attrs['placement'], list):
+        attrs['placement'] = ', '.join(attrs['placement'])
+    
+    # 添加标注状态字段
+    attrs['annotated'] = attrs.get('annotated', False)
+    attrs['uid'] = attrs.get('uid', '')
+    attrs['score'] = attrs.get('score', 1)
+    
+    # 移除勾选框相关字段（如果存在）
+    for key in list(attrs.keys()):
+        if key.startswith('chk_'):
+            attrs[key] = attrs.get(key, False)
+    
+    return attrs
 
 def build_gif_path(key):
     parts = key.split('-')
@@ -59,21 +86,29 @@ def build_gif_path(key):
         model_id = parts[3]
         return os.path.join(
             BASE_PATH, type_folder, subtype_folder, category_folder,
-            "thumbnails/merged_views", model_id, f"{model_id}_original.gif"
+            "thumbnails/merged_views", model_id, f"{model_id}_fixed.gif"
         )
     return None
 
 def save_data(data_dict):
+    """保存数据为JSONL格式"""
     import shutil
     from datetime import datetime
+    
+    # 备份原文件
     if os.path.exists(DATA_FILE):
         backup_dir = os.path.join(os.path.dirname(DATA_FILE), "backups")
         os.makedirs(backup_dir, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        shutil.copy2(DATA_FILE, os.path.join(backup_dir, f"test_backup_{ts}.json"))
-    data_list = [{k: v} for k, v in data_dict.items()]
-    with open(DATA_FILE, 'w') as f:
-        json.dump(data_list, f, indent=4, ensure_ascii=False)
+        backup_file = os.path.join(backup_dir, f"backup_{ts}.jsonl")
+        shutil.copy2(DATA_FILE, backup_file)
+    
+    # 保存为JSONL格式（每行一个JSON对象）
+    with open(DATA_FILE, 'w', encoding='utf-8') as f:
+        for key, value in data_dict.items():
+            line_obj = {key: value}
+            f.write(json.dumps(line_obj, ensure_ascii=False) + '\n')
+    
     print(f"💾 已保存到: {DATA_FILE}")
 
 def render_status_html(annotated: bool):
@@ -227,12 +262,16 @@ def start_annotation(server_port):
         if not k: return gr.update(),render_status_html(False),gr.update()
         # 计算score：如果任意一个勾选框被选中，score=0；否则score=1
         score = 0 if any([chk_c,chk_d,chk_m,chk_dim,chk_p]) else 1
+        
+        # 处理placement字段：从字符串转换为数组
+        placement_list = [item.strip() for item in p.split(',') if item.strip()] if p else []
+        
         # 保存数据，添加uid标识和score
         saved_data = {
             "annotated": True,
             "uid": USER_UID,  # 记录标注者的UID
             "score": score,  # 保存score
-            "data": f"```json\n{json.dumps(dict(category=c,description=d,material=m,dimensions=dim,placement=p,chk_category=chk_c,chk_description=chk_d,chk_material=chk_m,chk_dimensions=chk_dim,chk_placement=chk_p),indent=2,ensure_ascii=False)}\n```"
+            "data": f"```json\n{json.dumps(dict(category=c,description=d,material=m,dimensions=dim,placement=placement_list,chk_category=chk_c,chk_description=chk_d,chk_material=chk_m,chk_dimensions=chk_dim,chk_placement=chk_p),indent=2,ensure_ascii=False)}\n```"
         }
         DATA_DICT[k] = saved_data
         ALL_DATA[k] = saved_data  # 同时更新总数据
