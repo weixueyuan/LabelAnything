@@ -46,14 +46,44 @@ class DatabaseHandler:
             return result
         return {}
     
-    def save_item(self, model_id: str, data: Dict, score: int = 1, uid: str = None):
-        """保存单条数据"""
+    def assign_to_user(self, model_id: str, uid: str):
+        """
+        仅分配数据给用户（浏览即占有）
+        
+        只更新 uid 字段，不触碰其他任何数据
+        
+        Args:
+            model_id: 模型ID
+            uid: 用户ID
+        """
         try:
             annotation = self.session.query(Annotation).filter_by(model_id=model_id).first()
             if annotation:
-                # 更新
-                annotation.annotated = True
-                annotation.uid = uid if uid else data.get('uid', annotation.uid)
+                annotation.uid = uid
+                self.session.commit()
+                return True
+            return False
+        except Exception as e:
+            self.session.rollback()
+            print(f"❌ 分配失败: {e}")
+            return False
+    
+    def save_item(self, model_id: str, data: Dict, score: int = 1, uid: str = None):
+        """
+        保存标注数据（实际标注保存）
+        
+        Args:
+            model_id: 模型ID
+            data: 业务数据字典
+            score: 标注得分（0=有错误, 1=完成）
+            uid: 用户ID
+        """
+        try:
+            annotation = self.session.query(Annotation).filter_by(model_id=model_id).first()
+            if annotation:
+                # 更新标注状态和数据
+                annotation.annotated = True  # 保存即标记为已标注
+                annotation.uid = uid if uid else annotation.uid
                 annotation.score = score
                 # 更新业务数据（排除元数据字段）
                 annotation.data = {k: v for k, v in data.items() if k not in ['uid', 'annotated', 'score']}
