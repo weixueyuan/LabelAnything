@@ -224,9 +224,15 @@ class JSONLHandler:
             item.annotated = True
             item.uid = uid if uid else data.get('uid', item.uid)
             item.score = score
-            # 更新业务数据（排除元数据字段）
-            item.data = {k: v for k, v in data.items()
-                        if k not in ['uid', 'annotated', 'score']}
+            # 更新业务数据（合并而不是覆盖）
+            if item.data is None:
+                item.data = {}
+            
+            # 从表单提交的数据中排除元数据字段
+            update_data = {k: v for k, v in data.items() if k not in ['uid', 'annotated', 'score']}
+            
+            # 合并新旧数据
+            item.data.update(update_data)
             
             # 写回文件
             self._save_to_file()

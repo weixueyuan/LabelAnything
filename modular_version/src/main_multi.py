@@ -625,10 +625,21 @@ class TaskManager:
             if current_value is None:
                 current_value = ""
             
-            # 字符串对比（去除首尾空格）
-            if str(processed_value).strip() != str(current_value).strip():
-                print(f"字段 '{key}' 已修改: '{processed_value}' -> '{current_value}'")
-                return True
+            # 更智能的字符串对比
+            original_str = str(processed_value).strip()
+            current_str = str(current_value).strip()
+            
+            # 对 dimension 类字段，进行更宽松的比较（忽略内部空格差异）
+            # 同时也适用于其他用*分隔的字符串
+            if '*' in original_str or '*' in current_str:
+                if original_str.replace(' ', '') != current_str.replace(' ', ''):
+                    print(f"字段 '{key}' 已修改: '{processed_value}' -> '{current_value}'")
+                    return True
+            else:
+                # 其他字段，正常比较
+                if original_str != current_str:
+                    print(f"字段 '{key}' 已修改: '{processed_value}' -> '{current_value}'")
+                    return True
             
             # 对比checkbox值
             if field.get('has_checkbox') and checkbox_idx < len(current_checkbox_values):
@@ -800,25 +811,24 @@ def create_login_interface(auth_handler, task_config, debug, dev_user=None):
         dev_user: 开发模式用户，如果指定则自动跳过登录
     """
     
-    # 创建临时任务管理器（用于获取UI配置）
-    temp_manager = TaskManager(task_config, "temp_user", debug=debug)
-    
+    # 统一创建任务管理器，使用 dev_user 或一个临时的占位用户
+    initial_user = dev_user if dev_user else "pending_login"
+    manager = TaskManager(task_config, initial_user, debug=debug)
+
     # 如果数据未初始化，直接返回错误提示
-    if not temp_manager.data_handler:
+    if not manager.data_handler:
         with gr.Blocks() as error_demo:
             gr.Markdown("# ⚠️ 数据库未初始化\n运行: `python -m importers.annotation_importer`")
         return error_demo
-    
-    # 预先创建任务管理器（如果是开发模式）
-    manager = None
-    if dev_user:
-        manager = TaskManager(task_config, dev_user, debug=debug)
-    
+
     # 创建界面
-    with gr.Blocks(title=temp_manager.ui_config['title'], css=temp_manager.custom_css) as unified_demo:
+    with gr.Blocks(title=manager.ui_config['title'], css=manager.custom_css) as unified_demo:
+        # State to store the logged-in user
+        user_state = gr.State(value=initial_user)
+
         # 登录面板（初始显示，如果是开发模式则隐藏）
         with gr.Column(visible=(dev_user is None), elem_id="login_panel") as login_panel:
-            gr.Markdown(f"# 🔐 {temp_manager.ui_config['title']}")
+            gr.Markdown(f"# 🔐 {manager.ui_config['title']}")
             gr.Markdown("## 登录")
             
             with gr.Column():
@@ -829,31 +839,49 @@ def create_login_interface(auth_handler, task_config, debug, dev_user=None):
         
         # 标注界面面板（登录后显示，如果是开发模式则初始显示）
         with gr.Column(visible=(dev_user is not None), elem_id="annotation_panel") as annotation_panel:
-            # 如果是开发模式，直接构建界面
-            if manager:
-                manager.build_interface()
+            # 总是构建界面
+            manager.build_interface()
         
         # 登录逻辑
         def do_login(username, password):
-            """处理登录"""
+            """处理登录，成功后更新用户状态"""
             if not username or not password:
-                return gr.update(value="请输入用户名和密码", visible=True), gr.update(visible=True), gr.update(visible=False)
+                return gr.update(value="请输入用户名和密码", visible=True), gr.update(visible=True), gr.update(visible=False), username
             
             result = auth_handler.login(username, password)
             if result["success"]:
-                # 登录成功：创建标注界面管理器
                 username_value = result["user"]["username"]
+                # 更新 manager 的用户ID
+                manager.user_uid = username_value
+                # 重新计算可见数据
+                manager._refresh_visible_keys()
                 
-                # 返回登录状态和面板可见性
-                return gr.update(value="登录成功", visible=False), gr.update(visible=False), gr.update(visible=True)
+                # 返回成功状态和面板可见性，并更新user_state
+                return gr.update(value="登录成功", visible=False), gr.update(visible=False), gr.update(visible=True), username_value
             else:
-                return gr.update(value=result["message"], visible=True), gr.update(visible=True), gr.update(visible=False)
-        
+                return gr.update(value=result["message"], visible=True), gr.update(visible=True), gr.update(visible=False), ""
+
+        # 加载数据的辅助函数
+        def load_user_data(user):
+            """根据用户加载数据"""
+            if user and user != "pending_login":
+                print(f"🔄 为用户 '{user}' 加载数据...")
+                # 登录后，重置到第一条数据
+                # 输出绑定要求返回 [index] + [component_values]
+                return [0] + manager.load_data(0)
+            # 如果用户未登录，返回空数据
+            return [-1] + manager.load_data(-1) # 使用无效索引返回空值
+
         # 绑定登录事件
+        login_outputs = [login_status, login_panel, annotation_panel, user_state]
         login_btn.click(
             fn=do_login,
             inputs=[login_username, login_password],
-            outputs=[login_status, login_panel, annotation_panel]
+            outputs=login_outputs
+        ).then(
+            fn=load_user_data,
+            inputs=[user_state],
+            outputs=[manager.components['current_index']] + manager.load_outputs
         )
     
     return unified_demo

@@ -221,8 +221,15 @@ class DatabaseHandler:
             annotation.annotated = True  # 保存即标记为已标注
             annotation.uid = uid if uid else annotation.uid
             annotation.score = score
-            # 更新业务数据（排除元数据字段）
-            annotation.data = {k: v for k, v in data.items() if k not in ['uid', 'annotated', 'score']}
+            # 更新业务数据（合并而不是覆盖）
+            if annotation.data is None:
+                annotation.data = {}
+            
+            # 从表单提交的数据中排除元数据字段
+            update_data = {k: v for k, v in data.items() if k not in ['uid', 'annotated', 'score']}
+            
+            # 合并新旧数据
+            annotation.data.update(update_data)
             
             self.session.commit()
             return {
