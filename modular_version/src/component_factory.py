@@ -72,55 +72,19 @@ class ComponentFactory:
             elem_id=config.get("id")
         )
     
-    def _create_textbox(self, config: Dict) -> Union[gr.Textbox, tuple]:
+    def _create_textbox(self, config: Dict) -> gr.Textbox:
         """
-        创建文本框组件
-        
-        如果 has_checkbox=True，则返回 (textbox, checkbox) 元组
-        
-        支持的配置参数:
-        - label: 标签文本
-        - placeholder: 占位符文本
-        - lines: 文本行数
-        - interactive: 是否可交互编辑(默认为True)
-        - has_checkbox: 是否添加错误检查复选框
+        创建文本框组件。
+        标签和复选框在外部的 _create_and_store 中处理。
         """
-        # 获取交互状态（默认为可编辑）
-        
-        # 如果需要checkbox，先创建checkbox（在textbox上方）
-        if config.get("has_checkbox", False):
-            # 组合checkbox标签：checkbox_label + 字段label
-            checkbox_label = f"{config.get('checkbox_label', '✗')} {config.get('label', '')}"
-            checkbox = gr.Checkbox(
-                label=checkbox_label,
-                value=False,
-                container=False,
-                elem_id=f"{config.get('id')}_checkbox"
-            )
-            # 存储checkbox引用
-            self.checkboxes[config.get("id")] = checkbox
-            
-            # 创建textbox（显示原始标签）
-            textbox = gr.Textbox(
-                label=config.get("label", ""),  # 使用原始标签
-                placeholder=config.get("placeholder", ""),
-                lines=config.get("lines", 1),
-                interactive=bool(config.get("interactive", True)),
-                elem_id=config.get("id")
-            )
-            
-            return (textbox, checkbox)
-        
-        # 没有checkbox的情况，正常创建textbox
-        textbox = gr.Textbox(
-            label=config.get("label", ""),
+        return gr.Textbox(
+            label=None,
+            show_label=False,
             placeholder=config.get("placeholder", ""),
             lines=config.get("lines", 1),
             interactive=bool(config.get("interactive", True)),
             elem_id=config.get("id")
         )
-        
-        return textbox
     
     def _create_search(self, config: Dict) -> gr.Textbox:
         """
@@ -283,10 +247,7 @@ class ComponentFactory:
     
     def _create_and_store(self, comp_id: str):
         """
-        按需创建并存储组件（在当前Gradio上下文中）
-        
-        Args:
-            comp_id: 组件ID
+        按需创建并存储组件，并为textbox提供外部标签处理。
         """
         # 如果已经创建过，不再重复创建
         if comp_id in self.components:
@@ -298,15 +259,36 @@ class ComponentFactory:
         if not comp_config:
             print(f"⚠️  警告: 未找到组件配置 '{comp_id}'")
             return
-        
-        # 如果字段有checkbox，需要在Column中包裹
-        if comp_config.get("has_checkbox", False) and comp_config.get("type") == "textbox":
-            with gr.Column():
-                # create_component会返回(textbox, checkbox)元组
-                # Gradio会按照创建顺序渲染，所以checkbox会先渲染
+
+        # 对textbox进行特殊的外部标签处理
+        if comp_config.get("type") == "textbox":
+            with gr.Column(elem_id=f"{comp_id}_container", min_width=0):
+                # 如果有标签，处理标签和可能的复选框
+                if comp_config.get("label"):
+                    label_text = comp_config.get("label")
+                    
+                    if comp_config.get("has_checkbox", False):
+                        # 有复选框：将标签和复选框合并，以解决对齐问题并恢复旧版UI
+                        checkbox_label_char = comp_config.get('checkbox_label', '✗')
+                        full_label = f"{checkbox_label_char} {label_text}"
+                        
+                        checkbox = gr.Checkbox(
+                            label=full_label,
+                            value=False,
+                            container=False,
+                            elem_id=f"{comp_id}_checkbox"
+                        )
+                        self.checkboxes[comp_id] = checkbox
+                    else:
+                        # 没有复选框：只创建标签
+                        style = "color: #6B7280; font-size: 14px; font-weight: 500; margin-bottom: 4px;"
+                        style += " min-height: 28px; display: flex; align-items: center;"
+                        gr.Markdown(f"<div style='{style}'>{label_text}</div>")
+                
+                # 创建文本框组件本身
                 self.create_component(comp_config)
         else:
-            # 创建组件（在当前上下文中自动渲染）
+            # 对所有其他类型的组件，正常创建
             self.create_component(comp_config)
     
     def get_component(self, comp_id: str) -> Union[gr.Component, tuple, None]:

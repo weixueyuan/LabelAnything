@@ -190,9 +190,16 @@ class TaskManager:
             field_id = field_config['key']
             comp = self.components.get(field_id)
             if isinstance(comp, tuple):
-                # (textbox, checkbox) 元组
-                field_components.append(comp[0])
-                checkbox_components.append(comp[1])
+                # (checkbox, textbox) 元组，按顺序解包
+                checkbox_components.append(comp[0])
+                field_components.append(comp[1])
+            elif field_config.get('has_checkbox'):
+                # 这是一个历史遗留问题，理论上所有带checkbox的都应该是元组
+                # 但为了健壮性，如果不是元组但配置了checkbox，我们尝试从factory获取
+                chk = self.factory.get_checkbox(field_id)
+                if chk:
+                    checkbox_components.append(chk)
+                field_components.append(comp)
             else:
                 field_components.append(comp)
         
@@ -219,8 +226,17 @@ class TaskManager:
             
             comp = self.components.get(comp_id)
             if comp:
-                # 如果是元组（textbox + checkbox），展开添加
-                if isinstance(comp, tuple):
+                # 对于带复选框的文本框，需要同时添加复选框和文本框
+                if comp_type == 'textbox' and comp_config.get('has_checkbox'):
+                    checkbox = self.factory.get_checkbox(comp_id)
+                    if checkbox:
+                        # load_data 返回 (checkbox_value, textbox_value)
+                        load_outputs.append(checkbox)
+                        load_outputs.append(comp)
+                    else:
+                        load_outputs.append(comp) # Fallback
+                elif isinstance(comp, tuple):
+                    # 兼容旧的元组模式（尽管在当前代码中不应出现）
                     load_outputs.extend(comp)
                 else:
                     load_outputs.append(comp)
@@ -321,8 +337,8 @@ class TaskManager:
                     continue
                 
                 if comp_config.get('has_checkbox'):
-                    empty_result.append("")  # 字段值
                     empty_result.append(False)  # checkbox值
+                    empty_result.append("")  # 字段值
                 elif comp_config['id'] == 'scale_slider':
                     empty_result.append(1.0)  # 滑块默认值（float）
                 else:
@@ -398,11 +414,12 @@ class TaskManager:
                 # 使用 field_processor 处理字段值
                 field_info = {'key': data_field, 'process': comp_config.get('process')}
                 processed_value = self.field_processor.process_load(field_info, value)
-                result.append(processed_value)
-                
                 # 添加checkbox值
                 checkbox_value = attrs.get(f"chk_{data_field}", False)
+                
+                # 按照 (checkbox, textbox) 的顺序添加
                 result.append(checkbox_value)
+                result.append(processed_value)
                 
                 # 保存dimension/dimensions原始值（用于尺度滑块）
                 if self.dimension_field_name and data_field == self.dimension_field_name:
