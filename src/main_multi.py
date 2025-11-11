@@ -138,7 +138,7 @@ class TaskManager:
             # 用户信息
             if self.ui_config.get('show_user_info'):
                 other_count = len(self.all_data) - len(self.visible_keys)
-                _ = gr.HTML(self._render_user_info(len(self.visible_keys), other_count))
+                self.components['user_info'] = gr.HTML(self._render_user_info(len(self.visible_keys), other_count))
             
             # State组件
             self.components['current_index'] = gr.State(value=0)
@@ -216,6 +216,10 @@ class TaskManager:
         
         # 构建 load_outputs（按照COMPONENTS配置顺序，跳过按钮）
         load_outputs = []
+        # 添加用户信息组件（如果存在）
+        if 'user_info' in self.components:
+            load_outputs.append(self.components['user_info'])
+        
         for comp_config in self.components_config:
             comp_id = comp_config['id']
             comp_type = comp_config['type']
@@ -330,6 +334,10 @@ class TaskManager:
         if not self.visible_keys or index >= len(self.visible_keys):
             # 返回空值（数量根据组件配置动态计算，跳过按钮）
             empty_result = []
+            # 添加用户信息
+            if 'user_info' in self.components:
+                empty_result.append(self._render_user_info(0, 0))
+            
             for comp_config in self.components_config:
                 comp_type = comp_config['type']
                 # 跳过按钮组件（不在输出列表中）
@@ -372,6 +380,11 @@ class TaskManager:
         # 根据配置动态构建返回值（跳过按钮）
         result = []
         original_dims_value = ""  # 用于尺度滑块
+        
+        # 添加用户信息
+        if 'user_info' in self.components:
+            other_count = len(self.all_data) - len(self.visible_keys)
+            result.append(self._render_user_info(len(self.visible_keys), other_count))
         
         for comp_config in self.components_config:
             comp_id = comp_config['id']
@@ -819,7 +832,7 @@ def create_login_interface(auth_handler, task_config, debug, dev_user=None):
     if not manager.data_handler:
         with gr.Blocks() as error_demo:
             gr.Markdown("# ⚠️ 数据库未初始化\n运行: `python -m importers.annotation_importer`")
-        return error_demo
+        return error_demo, None
 
     # 创建界面
     with gr.Blocks(title=manager.ui_config['title'], css=manager.custom_css) as unified_demo:
@@ -884,7 +897,7 @@ def create_login_interface(auth_handler, task_config, debug, dev_user=None):
             outputs=[manager.components['current_index']] + manager.load_outputs
         )
     
-    return unified_demo
+    return unified_demo, manager
 
 
 def main():
@@ -953,10 +966,13 @@ def main():
         # 创建登录界面（即使是开发模式也使用统一界面，只是自动登录）
         from src.auth_handler import AuthHandler
         auth_handler = AuthHandler()
-        demo = create_login_interface(auth_handler, task_config, args.debug, dev_user=user_uid)
+        demo, manager = create_login_interface(auth_handler, task_config, args.debug, dev_user=user_uid)
         
-        # 创建管理器以获取允许的路径
-        manager = TaskManager(task_config, user_uid, debug=args.debug)
+        # 如果 manager 为 None，说明数据库未初始化，直接退出
+        if manager is None:
+            demo.launch(server_port=args.port, server_name="0.0.0.0")
+            return
+            
         allowed_paths = manager.get_allowed_paths()
         
         # 启动服务
@@ -980,10 +996,13 @@ def main():
         print(f"{'='*60}\n")
         
         # 创建登录界面
-        demo = create_login_interface(auth_handler, task_config, args.debug)
+        demo, manager = create_login_interface(auth_handler, task_config, args.debug)
         
-        # 创建管理器以获取允许的路径
-        manager = TaskManager(task_config, "temp_user", debug=args.debug)
+        # 如果 manager 为 None，说明数据库未初始化，直接退出
+        if manager is None:
+            demo.launch(server_port=args.port, server_name="0.0.0.0")
+            return
+
         allowed_paths = manager.get_allowed_paths()
         
         # 启动服务
