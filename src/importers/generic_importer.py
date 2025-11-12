@@ -112,28 +112,15 @@ class GenericImporter:
         }
         
         # 业务数据 - 通用处理
-        business_data = {}
-        for key, value in attrs.items():
-            # 跳过元数据字段
-            if key in ['annotated', 'uid', 'score']:
-                continue
-            
-            # 处理图片路径字段
-            if key.startswith('image_url') and isinstance(value, str) and base_path and not value.startswith('/'):
-                # 拼接基础路径和相对路径
-                business_data[key] = os.path.join(base_path, value)
-                print(f"  处理图片路径: {key} = {business_data[key]}")
-            # 自动处理数组字段：转为字符串
-            elif isinstance(value, list):
-                # 如果是字符串数组，用换行符连接
-                if value and isinstance(value[0], str):
-                    business_data[key] = '\n'.join(value)
-                # 如果是其他类型的数组，用逗号连接
-                else:
-                    business_data[key] = ', '.join(str(v) for v in value)
-            else:
-                # 其他字段保持原样
-                business_data[key] = value
+        # 业务数据 - 将除了元数据之外的所有字段都放入 business_data
+        business_data = {k: v for k, v in attrs.items() if k not in ['annotated', 'uid', 'score']}
+
+        # 如果提供了 base_path，处理所有以 image_url 开头的字段
+        if base_path:
+            for key, value in business_data.items():
+                if key.startswith('image_url') and isinstance(value, str) and not value.startswith('/'):
+                    business_data[key] = os.path.join(base_path, value)
+                    print(f"  处理图片路径: {key} = {business_data[key]}")
         
         return metadata, business_data
     

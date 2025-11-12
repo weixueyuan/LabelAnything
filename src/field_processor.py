@@ -53,26 +53,31 @@ class FieldProcessor:
             value: UI输入的值
             
         Returns:
-            处理后的值（用于保存到文件）
+            处理后的值（用于保存到数据库）
         """
         process_type = field_config.get('process', None)
-        
+        field_type = field_config.get('type')
+
+        # 1. 根据 'process' 类型进行转换
         if process_type == 'array_to_string':
-            # 将逗号分隔字符串转为数组
             if isinstance(value, str):
                 return [item.strip() for item in value.split(',') if item.strip()]
-            return value or []
+            return value if isinstance(value, list) else []
         
         elif process_type == 'json':
-            # 将JSON字符串转为对象
             if isinstance(value, str) and value.strip():
                 try:
                     return json.loads(value)
                 except json.JSONDecodeError:
-                    return value
+                    return value # 如果解析失败，返回原字符串
             return value or {}
-        
-        # 默认：不处理
+
+        # 2. 根据组件 'type' 进行最终格式化
+        if field_type == 'multiselect':
+            # multiselect 组件的返回值本身就应该是列表
+            return value if isinstance(value, list) else []
+            
+        # 3. 默认：不处理，返回原值
         return value
     
     @staticmethod

@@ -228,8 +228,13 @@ class DatabaseHandler:
             # 从表单提交的数据中排除元数据字段
             update_data = {k: v for k, v in data.items() if k not in ['uid', 'annotated', 'score']}
             
-            # 合并新旧数据
-            annotation.data.update(update_data)
+            # 创建一个新的字典来合并数据，而不是在原地修改
+            # 这种方法更安全，并能确保ORM框架正确追踪变更
+            new_data = annotation.data.copy() if annotation.data else {}
+            new_data.update(update_data)
+            
+            # 将完整的新字典赋回，确保变更被正确保存
+            annotation.data = new_data
             
             self.session.commit()
             return {
@@ -320,26 +325,19 @@ class DatabaseHandler:
             # 写入JSONL文件
             with open(filepath, 'w', encoding='utf-8') as f:
                 for ann in annotations:
-                    # 构建完整数据（包含元数据）
+                    # 构建完整数据（包含元数据和业务数据）
+                    # 这是导出过程的核心，确保数据的纯粹性
                     full_data = {
                         'annotated': ann.annotated,
                         'uid': ann.uid,
                         'score': ann.score,
                     }
                     
-                    # 合并业务数据
+                    # 直接合并数据库中存储的业务数据，不做任何转换
                     if ann.data:
                         full_data.update(ann.data)
                     
-                    # 处理需要特殊转换的字段（如 placement）
-                    for key, value in list(full_data.items()):
-                        # 查找字段配置
-                        if key in self.field_configs:
-                            field_config = self.field_configs[key]
-                            
-                            # 导出时需要是数组格式
-                            if isinstance(value, str) and field_config.get('process') == 'array_to_string':
-                                full_data[key] = self.field_processor.process_save(field_config, value)
+                    # 移除所有特殊字段处理，保持数据原样
                     
                     # 写入 JSONL 格式：{"model_id": {数据}}
                     line_obj = {ann.model_id: full_data}

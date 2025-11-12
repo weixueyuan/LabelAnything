@@ -45,47 +45,24 @@ class TaskManager:
         self.custom_css = getattr(config_module, 'CUSTOM_CSS', '')
         
         # 从COMPONENTS中提取字段配置（用于数据处理）
-        self.field_configs = []
-        # 先添加所有带checkbox的字段
-        for comp in self.components_config:
-            if comp.get('has_checkbox') is not None:  # 只要定义了has_checkbox，就认为是字段
-                self.field_configs.append({
-                    'key': comp['id'],
-                    'label': comp['label'],
-                    'type': comp['type'],
-                    'lines': comp.get('lines', 1),
-                    'has_checkbox': comp.get('has_checkbox'),
-                    'interactive': comp.get('interactive', True),  # 默认可编辑
-                    'placeholder': comp.get('placeholder', ''),
-                    'process': comp.get('process')
-                })
-        
-        # 再添加滑块的目标字段（如果尚未包含）
-        slider_target_fields = []
-        for comp in self.components_config:
-            if comp.get('type') == 'slider':
-                target_field = comp.get('target_field')
-                if target_field and target_field not in slider_target_fields:
-                    slider_target_fields.append(target_field)
-                    # 检查是否已包含在field_configs中
-                    if not any(f['key'] == target_field for f in self.field_configs):
-                        # 查找目标字段的完整配置
-                        target_comp = None
-                        for c in self.components_config:
-                            if c['id'] == target_field:
-                                target_comp = c
-                                break
-                        if target_comp:
-                            self.field_configs.append({
-                                'key': target_comp['id'],
-                                'label': target_comp.get('label', target_comp['id']),
-                                'type': target_comp['type'],
-                                'lines': target_comp.get('lines', 1),
-                                'has_checkbox': target_comp.get('has_checkbox'),
-                                'interactive': target_comp.get('interactive', True),
-                                'placeholder': target_comp.get('placeholder', ''),
-                                'process': target_comp.get('process')
-                            })
+        # 新规则：任何定义了 'data_field' 的组件都将被视为一个需要与数据库交互的字段。
+        # 'data_field' 的值就是它在数据库 'data' JSON对象中的key。
+        self.field_configs = [
+            {
+                'key': comp.get('data_field', comp['id']), # 优先使用 data_field, 否则用 id
+                'id': comp['id'], # 组件自身的ID
+                'label': comp.get('label', comp['id']),
+                'type': comp['type'],
+                'lines': comp.get('lines', 1),
+                'has_checkbox': comp.get('has_checkbox', False),
+                'interactive': comp.get('interactive', True),
+                'placeholder': comp.get('placeholder', ''),
+                'process': comp.get('process'),
+                'data_field': comp.get('data_field', comp['id']) # 显式存储
+            }
+            for comp in self.components_config
+            if comp.get('data_field') is not None and comp.get('type') not in ['button', 'slider']
+        ]
         
         # 数据库路径
         self.db_path = f"databases/{self.task_name}.db"
@@ -226,182 +203,117 @@ class TaskManager:
         self._bind_events(demo, user_state)
     
     def _bind_events(self, demo, user_state):
-        """绑定所有事件处理函数"""
-        # 提取字段组件和checkbox组件
-        field_components = []
-        checkbox_components = []
+        """
+        绑定所有事件处理函数（重构版）
+        核心原则：所有输入输出列表都由配置动态生成，确保顺序和内容的一致性。
+        """
+        # 1. 定义核心组件
+        # 这些是所有事件处理中都可能用到的基本组件
+        core_inputs = {
+            'user_state': user_state,
+            'current_index': self.components['current_index'],
+            'model_id': self.components.get('model_id'),
+            'nav_direction': self.components['nav_direction']
+        }
+
+        # 2. 构建动态的字段输入/输出列表
+        # 这个列表的顺序是所有操作（加载、保存、检查）的唯一真实来源
+        self.interactive_components = []  # 用于UI交互的组件列表
+        self.field_component_map = {}     # 字段key -> 组件 的映射
         
-        # 打印所有字段配置，帮助调试
-        print("字段配置列表:")
-        for i, field_config in enumerate(self.field_configs):
-            print(f"  {i}: key='{field_config['key']}', has_checkbox={field_config.get('has_checkbox')}")
-        
-        for field_config in self.field_configs:
-            field_id = field_config['key']
-            comp = self.components.get(field_id)
-            if isinstance(comp, tuple):
-                # (checkbox, textbox) 元组，按顺序解包
-                checkbox_components.append(comp[0])
-                field_components.append(comp[1])
-                print(f"字段 '{field_id}': 使用元组模式 (checkbox, textbox)")
-            elif field_config.get('has_checkbox'):
-                # 这是一个历史遗留问题，理论上所有带checkbox的都应该是元组
-                # 但为了健壮性，如果不是元组但配置了checkbox，我们尝试从factory获取
-                chk = self.factory.get_checkbox(field_id)
-                if chk:
-                    checkbox_components.append(chk)
-                    print(f"字段 '{field_id}': 从factory获取checkbox")
-                else:
-                    print(f"⚠️ 字段 '{field_id}': 配置了checkbox但未找到组件")
-                field_components.append(comp)
-            else:
-                field_components.append(comp)
-                print(f"字段 '{field_id}': 普通字段，无checkbox")
-        
-        # 保存组件引用，方便后续使用
-        self.field_components = field_components
-        self.checkbox_components = checkbox_components
-        
-        # 获取其他组件
-        model_id_display = self.components.get('model_id')
-        scale_slider = self.components.get('scale_slider')
-        prev_btn = self.components.get('prev_btn')
-        next_btn = self.components.get('next_btn')
-        save_btn = self.components.get('save_btn')
-        
-        # 构建 load_outputs（按照COMPONENTS配置顺序，跳过按钮）
-        load_outputs = []
-        # 添加用户信息组件（如果存在）
-        if 'user_info' in self.components:
-            load_outputs.append(self.components['user_info'])
-            print(f"添加输出组件: user_info")
-        
-        # 打印所有组件配置，帮助调试
-        print("\n组件配置列表:")
-        for i, comp_config in enumerate(self.components_config):
-            print(f"  {i}: id='{comp_config['id']}', type='{comp_config['type']}', has_checkbox={comp_config.get('has_checkbox')}")
-        
+        # 按照 field_configs 的顺序构建
+        for field in self.field_configs:
+            comp_id = field['id']
+            comp = self.components.get(comp_id)
+            if not comp:
+                print(f"⚠️ 警告: 在 self.components 中未找到ID为 '{comp_id}' 的组件")
+                continue
+
+            self.field_component_map[field['key']] = comp
+            if field.get('has_checkbox'):
+                checkbox = self.factory.get_checkbox(comp_id)
+                if checkbox:
+                    self.interactive_components.append(checkbox)
+            self.interactive_components.append(comp)
+
+        # 3. 构建 `load_data` 的输出列表 (`load_outputs`)
+        # 这个列表的顺序必须与 `load_data` 函数返回值的顺序严格一致
+        self.load_outputs = []
+        # 按照 components_config 的顺序构建，以匹配UI布局
         for comp_config in self.components_config:
             comp_id = comp_config['id']
-            comp_type = comp_config['type']
-            
-            # 跳过按钮组件
-            if comp_type == 'button':
-                print(f"跳过按钮组件: {comp_id}")
-                continue
-            
             comp = self.components.get(comp_id)
-            if comp:
-                # 对于带复选框的文本框，需要同时添加复选框和文本框
-                if comp_type == 'textbox' and comp_config.get('has_checkbox'):
-                    checkbox = self.factory.get_checkbox(comp_id)
-                    if checkbox:
-                        # load_data 返回 (checkbox_value, textbox_value)
-                        load_outputs.append(checkbox)
-                        load_outputs.append(comp)
-                        print(f"添加带复选框的文本框: {comp_id} (checkbox + textbox)")
-                    else:
-                        load_outputs.append(comp) # Fallback
-                        print(f"添加文本框(无复选框): {comp_id} (fallback)")
-                elif isinstance(comp, tuple):
-                    # 兼容旧的元组模式（尽管在当前代码中不应出现）
-                    load_outputs.extend(comp)
-                    print(f"添加元组组件: {comp_id}")
-                else:
-                    load_outputs.append(comp)
-                    print(f"添加普通组件: {comp_id}")
+            if comp_config['type'] == 'button': continue
+            if not comp: continue
+
+            # 如果是带复选框的字段，先加复选框
+            if comp_config.get('has_checkbox'):
+                checkbox = self.factory.get_checkbox(comp_id)
+                if checkbox:
+                    self.load_outputs.append(checkbox)
+            self.load_outputs.append(comp)
         
-        # 只有当存在滑块组件时才添加 original_dimensions state
-        # 这确保了load_data函数返回的值数量与load_outputs列表中的组件数量一致
+        # 添加滑块的状态组件（如果存在）
         if self.has_slider:
-            print(f"✓ 添加滑块状态组件到输出列表")
-            load_outputs.append(self.components['original_dimensions'])
-        self.load_outputs = load_outputs  # 保存以备后用
-        
-        # 打印输出组件总数
-        print(f"\n输出组件总数: {len(load_outputs)}")
-        for i, comp in enumerate(load_outputs):
-            comp_name = getattr(comp, 'elem_id', f"组件{i}")
-            print(f"  {i}: {comp_name}")
-        
-        # 页面加载时加载数据
-        demo.load(fn=self.load_data, inputs=[self.components['current_index'], user_state], outputs=self.load_outputs)
-        
-        # 移除 model_id 变化时自动加载数据的事件
-        # 只保留按回车键触发的搜索事件，避免用户修改但未按回车时触发搜索
-        
-        # 滑块变化时更新目标字段
-        # 只有当存在滑块组件和目标字段时才绑定事件
-        if scale_slider and self.slider_target_fields:
-            print(f"✓ 绑定滑块变化事件")
-            
-            # 查找所有目标字段的索引
-            for target_field in self.slider_target_fields:
-                target_idx = None
-                for i, field in enumerate(self.field_configs):
-                    if field['key'] == target_field:
-                        target_idx = i
-                        print(f"  - 目标字段 '{target_field}' 在字段列表中的索引: {target_idx}")
-                        break
-                
-                if target_idx is not None:
-                    scale_slider.change(
-                        fn=self.scale_dimensions,
-                        inputs=[self.components['original_dimensions'], scale_slider],
-                        outputs=[field_components[target_idx]]
-                    )
-                    print(f"  - 滑块事件绑定成功，目标字段: {target_field}")
-                else:
-                    print(f"⚠️ 未找到目标字段 '{target_field}' 的索引，无法绑定滑块事件")
-        
-        # 搜索功能（按回车触发）- model_id既显示也可搜索
-        if model_id_display:
-            search_outputs = [self.components['current_index']] + self.load_outputs
-            model_id_display.submit(
+            self.load_outputs.append(self.components['original_dimensions'])
+
+        # 4. 构建事件的输入列表
+        # 用于保存和导航检查的输入列表
+        event_inputs = [
+            core_inputs['user_state'],
+            core_inputs['current_index'],
+            core_inputs['model_id']
+        ] + self.interactive_components
+
+        # 5. 绑定事件
+        # 页面加载
+        demo.load(fn=self.load_data,
+                  inputs=[core_inputs['current_index'], core_inputs['user_state']],
+                  outputs=self.load_outputs)
+
+        # 搜索
+        if core_inputs['model_id']:
+            search_outputs = [core_inputs['current_index']] + self.load_outputs
+            core_inputs['model_id'].submit(
                 fn=self.search_and_load,
-                inputs=[user_state, model_id_display],
+                inputs=[core_inputs['user_state'], core_inputs['model_id']],
                 outputs=search_outputs
             )
-        
+
         # 保存
-        save_inputs = [user_state, self.components['current_index'], model_id_display] + field_components + checkbox_components
-        save_btn.click(fn=self.save_data, inputs=save_inputs, outputs=self.load_outputs)
-        
-        # 导航检查和跳转
-        nav_inputs = [user_state, self.components['current_index'], model_id_display] + field_components + checkbox_components
-        nav_outputs = [self.components['current_index']] + self.load_outputs + [self.components['confirm_modal'], self.components['nav_direction']]
-        
-        prev_btn.click(
-            fn=self.check_and_nav_prev,
-            inputs=nav_inputs,
-            outputs=nav_outputs
-        )
-        next_btn.click(
-            fn=self.check_and_nav_next,
-            inputs=nav_inputs,
-            outputs=nav_outputs
-        )
-        
-        # 导出
-        if 'export_btn' in self.components:
-            self.components['export_btn'].click(
-                fn=self.export_to_jsonl,
-                outputs=[self.components['export_status']]
-            )
-        
-        # 确认弹窗按钮
-        save_and_continue_inputs = [user_state, self.components['current_index'], model_id_display, self.components['nav_direction']] + field_components + checkbox_components
-        save_and_continue_outputs = [self.components['current_index']] + self.load_outputs + [self.components['confirm_modal']]
+        save_btn = self.components.get('save_btn')
+        if save_btn:
+            save_btn.click(fn=self.save_data, inputs=event_inputs, outputs=self.load_outputs)
+
+        # 导航
+        prev_btn = self.components.get('prev_btn')
+        next_btn = self.components.get('next_btn')
+        nav_outputs = [core_inputs['current_index']] + self.load_outputs + \
+                      [self.components['confirm_modal'], core_inputs['nav_direction']]
+        if prev_btn:
+            prev_btn.click(fn=self.check_and_nav_prev, inputs=event_inputs, outputs=nav_outputs)
+        if next_btn:
+            next_btn.click(fn=self.check_and_nav_next, inputs=event_inputs, outputs=nav_outputs)
+
+        # 弹窗操作
+        save_and_continue_inputs = [core_inputs['nav_direction']] + event_inputs
+        save_and_continue_outputs = [core_inputs['current_index']] + self.load_outputs + [self.components['confirm_modal']]
         self.components['save_and_continue'].click(
             fn=self.save_and_continue_nav,
             inputs=save_and_continue_inputs,
             outputs=save_and_continue_outputs
         )
         
-        skip_and_continue_outputs = [self.components['current_index']] + self.load_outputs + [self.components['confirm_modal']]
+        skip_and_continue_inputs = [
+            core_inputs['user_state'],
+            core_inputs['current_index'],
+            core_inputs['model_id'],
+            core_inputs['nav_direction']
+        ]
+        skip_and_continue_outputs = [core_inputs['current_index']] + self.load_outputs + [self.components['confirm_modal']]
         self.components['skip_changes'].click(
             fn=self.skip_and_continue_nav,
-            inputs=[user_state, self.components['current_index'], model_id_display, self.components['nav_direction']],
+            inputs=skip_and_continue_inputs,
             outputs=skip_and_continue_outputs
         )
         
@@ -409,195 +321,106 @@ class TaskManager:
             fn=lambda: gr.update(visible=False),
             outputs=[self.components['confirm_modal']]
         )
+
+        # 导出
+        if 'export_btn' in self.components:
+            self.components['export_btn'].click(
+                fn=self.export_to_jsonl,
+                outputs=[self.components['export_status']]
+            )
+        
+        # 滑块
+        scale_slider = self.components.get('scale_slider')
+        if scale_slider and self.slider_target_fields:
+            for target_key in self.slider_target_fields:
+                target_comp = self.field_component_map.get(target_key)
+                if target_comp:
+                    scale_slider.change(
+                        fn=self.scale_dimensions,
+                        inputs=[self.components['original_dimensions'], scale_slider],
+                        outputs=[target_comp]
+                    )
     
     def load_data(self, index, user_uid):
-        """
-        根据组件配置动态加载数据
-        通过 data_field 属性将数据库字段映射到UI组件
-        """
+        """根据组件配置动态加载数据 (重构版)"""
         print(f"\n加载数据: index={index}, user_uid={user_uid}")
-        # 确保 visible_keys 是最新的
-        visible_keys = self._refresh_visible_keys(user_uid)
+        self._refresh_visible_keys(user_uid)
 
-        if not self.visible_keys or index >= len(self.visible_keys):
-            # 返回空值（数量根据组件配置动态计算，跳过按钮）
-            empty_result = []
-            # 添加用户信息
-            if 'user_info' in self.components:
-                empty_result.append(self._render_user_info(0, 0, user_uid))
-            
-            for comp_config in self.components_config:
-                comp_type = comp_config['type']
-                # 跳过按钮组件（不在输出列表中）
-                if comp_type == 'button':
-                    continue
-                
-                if comp_config.get('has_checkbox'):
-                    empty_result.append(False)  # checkbox值
-                    empty_result.append("")  # 字段值
-                elif comp_config['id'] == 'scale_slider':
-                    empty_result.append(1.0)  # 滑块默认值（float）
-                elif comp_type == 'image':
-                    empty_result.append(None) # 修复：图片组件为空时必须返回None
-                else:
-                    empty_result.append("")
-            
-            # 只有当存在滑块组件时才添加 original_dimensions state
-            # 这确保了返回值数量与load_outputs列表中的组件数量一致
-            if self.has_slider:
-                empty_result.append("")  # +1 for original_dimensions state
-                print(f"ℹ️ load_data (空数据): 添加滑块状态值")
-            
-            return empty_result
-        
-        model_id = self.visible_keys[index]
-        
-        # 直接从all_data获取数据
-        item = self.all_data.get(model_id)
-        if not item:
-            # 此处也应返回与上面结构相同的空结果
-            empty_result = []
-            if 'user_info' in self.components:
-                empty_result.append(self._render_user_info(0, 0, user_uid))
-            for comp_config in self.components_config:
-                comp_type = comp_config['type']
-                if comp_type == 'button':
-                    continue
-                
-                if comp_config.get('has_checkbox'):
-                    empty_result.append(False)
-                    empty_result.append("")
-                elif comp_config['id'] == 'scale_slider':
-                    empty_result.append(1.0)
-                elif comp_type == 'image':
-                    empty_result.append(None) # 修复：图片组件为空时必须返回None
-                else:
-                    empty_result.append("")
-            # 只有当存在滑块组件时才添加 original_dimensions state
-            # 这确保了返回值数量与load_outputs列表中的组件数量一致
-            if self.has_slider:
-                empty_result.append("")  # +1 for original_dimensions state
-                print(f"ℹ️ load_data (无效项): 添加滑块状态值")
-            
-            return empty_result
-
-        attrs = self.data_handler.parse_item(item)
-        
-        # 浏览即占有 - 简单直接方式（不使用缓存）
-        current_uid = attrs.get('uid', '')
-        if not current_uid or current_uid == '':
-            # 数据未分配，立即占有（只设置uid，不触碰其他数据）
-            if hasattr(self.data_handler, "assign_to_user"):
-                self.data_handler.assign_to_user(model_id, user_uid)
-                print(f"🔒 占有数据: {model_id} -> {user_uid}")
-                # 重新加载全部数据（简单直接）
-                self.all_data = self.data_handler.load_data()
-                # 重新计算可见数据
-                self._refresh_visible_keys(user_uid)
-                # 重新获取当前项
-                item = self.all_data.get(model_id)
+        # 确定要加载的数据属性
+        is_valid_item = self.visible_keys and 0 <= index < len(self.visible_keys)
+        attrs = {}
+        model_id = ""
+        if is_valid_item:
+            model_id = self.visible_keys[index]
+            item = self.all_data.get(model_id)
+            if item:
                 attrs = self.data_handler.parse_item(item)
-        
-        # 根据配置动态构建返回值（跳过按钮）
+                # 浏览即占有
+                if not attrs.get('uid'):
+                    if hasattr(self.data_handler, "assign_to_user"):
+                        self.data_handler.assign_to_user(model_id, user_uid)
+                        # 简单刷新
+                        self.all_data = self.data_handler.load_data()
+                        self._refresh_visible_keys(user_uid)
+                        item = self.all_data.get(model_id)
+                        attrs = self.data_handler.parse_item(item) if item else {}
+
+        # 根据 self.load_outputs 动态构建返回值
         result = []
-        original_dims_value = ""  # 用于尺度滑块
-        
-        # 打印调试信息
-        print(f"构建返回值: model_id={model_id}")
-        
-        # 添加用户信息
-        if 'user_info' in self.components:
-            other_count = len(self.all_data) - len(self.visible_keys)
-            result.append(self._render_user_info(len(self.visible_keys), other_count, user_uid))
-        
-        for comp_config in self.components_config:
-            comp_id = comp_config['id']
-            comp_type = comp_config['type']
+        original_dims_value = ""
+        for comp in self.load_outputs:
+            comp_id = comp.elem_id
             
-            # 跳过按钮组件（不在输出列表中）
-            if comp_type == 'button':
+            # 在 components_config 中查找该组件的配置
+            comp_config = next((c for c in self.components_config if c['id'] == comp_id), None)
+            if not comp_config:
+                # 处理特殊组件，如 original_dimensions state
+                if comp_id == 'original_dimensions':
+                    result.append(original_dims_value)
+                else:
+                    result.append(None) # 或者 gr.update()
                 continue
-            
-            data_field = comp_config.get('data_field', comp_id)  # 默认使用id作为字段名
-            
-            # 处理特殊字段
-            if data_field == 'model_id':
+
+            data_field = comp_config.get('data_field', comp_id)
+            comp_type = comp_config['type']
+
+            # 检查是否是复选框组件
+            is_checkbox = comp_id.startswith('chk_')
+
+            if is_checkbox:
+                # 从 'chk_field_name' 中提取 'field_name'
+                field_key = comp_id.replace('chk_', '', 1)
+                result.append(attrs.get(f"chk_{field_key}", False))
+            elif data_field == 'model_id':
                 result.append(model_id)
-            
-            elif data_field == 'image_url':
-                # 图片路径，检查文件是否存在
-                img_path = attrs.get('image_url', None)
-                if img_path and not os.path.exists(img_path):
-                    img_path = None
-                result.append(img_path)
-            
             elif data_field == '_computed_status':
-                # 动态计算的状态
-                status_html = self._render_status(attrs.get('annotated', False))
-                result.append(status_html)
-            
+                result.append(self._render_status(attrs.get('annotated', False)))
             elif comp_id == 'progress_box':
-                # 进度显示
-                prog = f"{index + 1} / {len(self.visible_keys)}"
+                prog = f"{index + 1} / {len(self.visible_keys)}" if is_valid_item else "0 / 0"
                 result.append(prog)
-            
             elif comp_id == 'scale_slider':
-                # 尺度滑块重置为1.0（确保是float类型）
-                result.append(float(1.0))
-            
-            elif comp_config.get('has_checkbox'):
-                # 带checkbox的字段
+                result.append(1.0)
+            elif comp_type == 'image':
+                img_path = attrs.get(data_field)
+                result.append(img_path if img_path and os.path.exists(img_path) else None)
+            elif comp_type == 'multiselect':
+                value = attrs.get(data_field, [])
+                # 确保 value 是列表格式
+                if not isinstance(value, list):
+                    value = [value] if value else []
+                
+                # 获取选项列表
+                choices = attrs.get(f"{data_field}_choice", [])
+                
+                # 更新组件的值和选项
+                result.append(gr.update(value=value, choices=choices))
+            else: # Textbox, etc.
                 value = attrs.get(data_field, '')
-                # 使用 field_processor 处理字段值
-                field_info = {'key': data_field, 'process': comp_config.get('process')}
-                processed_value = self.field_processor.process_load(field_info, value)
-                # 添加checkbox值
-                checkbox_value = attrs.get(f"chk_{data_field}", False)
-                
-                # 打印调试信息
-                print(f"字段 '{data_field}': checkbox={checkbox_value}, value='{processed_value}'")
-                
-                # 按照 (checkbox, textbox) 的顺序添加
-                result.append(checkbox_value)
+                processed_value = self.field_processor.process_load(comp_config, value)
                 result.append(processed_value)
-                
-                # 保存字段原始值（用于滑块）
                 if self.has_slider and data_field in self.slider_target_fields:
-                    original_dims_value = attrs.get(data_field, '')
-                    print(f"  - 保存字段 '{data_field}' 的原始值: '{original_dims_value}'")
-            
-            
-            # 处理其他图片字段（part_annotation 有多个图片）
-            elif comp_type == 'image' and data_field not in ['model_id', '_computed_status']:
-                # 其他图片字段（如 image_url_p1, image_url_p2）
-                img_path = attrs.get(data_field, None)
-                if img_path and not os.path.exists(img_path):
-                    img_path = None
-                result.append(img_path)
-            
-            else:
-                # 其他普通字段
-                value = attrs.get(data_field, '')
-                result.append(value)
-                # 如果这个普通字段是滑块的目标，也需要保存其原始值
-                if self.has_slider and data_field in self.slider_target_fields and not comp_config.get('has_checkbox'):
                     original_dims_value = value
-                    print(f"  - 保存字段 '{data_field}' 的原始值 (普通字段): '{original_dims_value}'")
-        
-        # 只有当存在滑块组件时才添加 original_dimensions state
-        # 这确保了返回值数量与load_outputs列表中的组件数量一致
-        if self.has_slider:
-            result.append(original_dims_value)
-            print(f"ℹ️ load_data (有效数据): 添加滑块状态值 '{original_dims_value}'")
-        
-        # 打印返回值数量
-        print(f"返回值数量: {len(result)}")
-        for i, val in enumerate(result):
-            val_str = str(val)
-            if len(val_str) > 50:
-                val_str = val_str[:50] + "..."
-            print(f"  {i}: {val_str}")
-        
+
         return result
     
     def scale_dimensions(self, original_dims, scale_value):
@@ -637,29 +460,47 @@ class TaskManager:
         return resolved_index, resolved_model
     
     def save_data(self, user_uid, index, model_id, *values):
-        """保存数据"""
+        """保存数据 (重构版)"""
         resolved_index, resolved_model = self._resolve_model(index, model_id)
         if resolved_model is None:
             return self.load_data(resolved_index, user_uid)
-        
-        num_fields = len(self.field_configs)
-        field_values = values[:num_fields]
-        checkbox_values = values[num_fields:]
-        
+
+        # 安全地解析 *values
+        value_map = {}
+        value_idx = 0
+        for comp in self.interactive_components:
+            if value_idx < len(values):
+                value_map[comp.elem_id] = values[value_idx]
+            else:
+                value_map[comp.elem_id] = None # 预防性代码
+            value_idx += 1
+
         attributes = {}
-        has_error = False  # 追踪是否有任何checkbox被选中
-        
-        for i, field in enumerate(self.field_configs):
-            key = field['key']
-            value = field_values[i]
-            attributes[key] = self.field_processor.process_save(field, value)
-            if field.get('has_checkbox') and i < len(checkbox_values):
-                chk_value = checkbox_values[i]
-                attributes[f"chk_{key}"] = chk_value
-                if chk_value:  # 如果任何checkbox被选中，标记为有错误
+        has_error = False
+
+        # 根据 field_configs 构建要保存的属性
+        for field in self.field_configs:
+            field_id = field['id']
+            field_key = field['key']
+            
+            # 获取字段值
+            field_value = value_map.get(field_id)
+            
+            # 对于 multiselect 类型的字段，确保值是列表格式
+            if field.get('type') == 'multiselect' and not isinstance(field_value, list):
+                field_value = [field_value] if field_value else []
+            
+            attributes[field_key] = self.field_processor.process_save(field, field_value)
+            print(f"保存字段: {field_key} = {attributes[field_key]}")
+
+            # 获取对应的复选框值
+            if field.get('has_checkbox'):
+                chk_id = f"{field_id}_checkbox"  # 直接构造checkbox的ID
+                chk_value = value_map.get(chk_id, False)
+                attributes[f"chk_{field_key}"] = chk_value
+                if chk_value:
                     has_error = True
         
-        # 计算score：如果任意一个checkbox被选中，score=0；否则score=1
         score = 0 if has_error else 1
         
         # 直接使用data_handler保存（不使用缓存）
@@ -692,8 +533,10 @@ class TaskManager:
             # 返回当前数据并显示错误信息
             result = self.load_data(resolved_index, user_uid)
             # 如果状态框在加载的组件中，则替换状态框内容
-            for i, comp in enumerate(self.components_config):
-                if comp.get('data_field') == '_computed_status':
+            for i, comp in enumerate(self.load_outputs):
+                comp_id = comp.elem_id if hasattr(comp, 'elem_id') else None
+                comp_config = next((c for c in self.components_config if c['id'] == comp_id), None)
+                if comp_config and comp_config.get('data_field') == '_computed_status':
                     result[i] = error_status_html
             
             return result
@@ -707,7 +550,14 @@ class TaskManager:
             # 重新计算可见键
             visible_keys = self._refresh_visible_keys(user_uid)
             
-            return self.load_data(resolved_index, user_uid)
+            # 确保索引在有效范围内
+            if resolved_model in visible_keys:
+                new_index = visible_keys.index(resolved_model)
+            else:
+                new_index = min(resolved_index, len(visible_keys) - 1) if visible_keys else 0
+            
+            # 返回更新后的数据
+            return self.load_data(new_index, user_uid)
     
     def search_and_load(self, user_uid, search_value):
         """
@@ -741,102 +591,109 @@ class TaskManager:
             print(f"⚠️  未找到: {search_value}")
             return [self.components['current_index'].value] + self.load_data(self.components['current_index'].value, user_uid)
     
-    def has_real_changes(self, user_uid, index, model_id, *field_values_and_checkboxes):
-        """检查当前字段值是否与数据库中的原始值不同"""
+    def has_real_changes(self, user_uid, index, model_id, *values):
+        """检查当前字段值是否与数据库中的原始值不同 (重构版)"""
         if not self.visible_keys or index >= len(self.visible_keys):
             return False
         
-        # 获取当前记录的ID
-        if model_id and model_id in self.visible_keys:
-            current_model_id = model_id
-        elif index < len(self.visible_keys):
-            current_model_id = self.visible_keys[index]
-        else:
+        current_model_id = self._resolve_model(index, model_id)[1]
+        if not current_model_id:
             return False
-        
-        # 直接从数据库获取最新数据，避免使用可能过时的缓存
-        if hasattr(self.data_handler, "get_item"):
-            # 如果数据处理器支持直接获取单个项目
-            item = self.data_handler.get_item(current_model_id)
-            if not item:
-                return False
-        else:
-            # 回退到缓存数据
-            if current_model_id not in self.all_data:
-                return False
-            item = self.all_data[current_model_id]
+
+        item = self.data_handler.get_item(current_model_id)
+        if not item:
+            return False
         
         attrs = self.data_handler.parse_item(item)
         
         # 打印调试信息，帮助诊断问题
         print(f"比较数据 - ID: {current_model_id}, 用户: {user_uid}")
         
-        # 分离字段值和checkbox值
-        num_fields = len(self.field_configs)
-        current_field_values = list(field_values_and_checkboxes[:num_fields])
-        current_checkbox_values = list(field_values_and_checkboxes[num_fields:])
-        
-        checkbox_idx = 0
-        # 对比每个字段
-        for i, field in enumerate(self.field_configs):
-            if i >= len(current_field_values):
-                continue  # 防止索引越界
-            
-            # 对比字段值
-            key = field['key']
-            
-            # 忽略 model_id 字段的变化，因为它只是用于搜索，不应该触发保存确认
-            if key == 'model_id':
+        # 安全地解析 *values
+        value_map = {}
+        value_idx = 0
+        for comp in self.interactive_components:
+            if value_idx < len(values):
+                value_map[comp.elem_id] = values[value_idx]
+            else:
+                value_map[comp.elem_id] = None
+            value_idx += 1
+
+        # 迭代 self.field_configs 来进行比较
+        for field in self.field_configs:
+            field_id = field['id']
+            field_key = field['key']
+            field_type = field['type']
+
+            # 忽略 model_id 字段的变化
+            if field_key == 'model_id':
                 continue
                 
-            original_value = attrs.get(key, '')
-            # 使用processor处理原始值，确保与UI显示格式一致
-            processed_value = self.field_processor.process_load(field, original_value)
-            if processed_value is None:
-                processed_value = ""
+            # 忽略计算字段和只读字段的变化
+            if field_key.startswith('_computed_') or field.get('interactive') is False:
+                continue
+
+            # 比较字段值
+            original_value = attrs.get(field_key, '')
+            # 使用 process_load 处理原始值，确保与UI显示格式一致
+            processed_original_value = self.field_processor.process_load(field, original_value)
+            if processed_original_value is None:
+                processed_original_value = ""
                 
-            current_value = current_field_values[i]
+            current_value = value_map.get(field_id)
             if current_value is None:
                 current_value = ""
             
             # 更智能的字符串对比
-            original_str = str(processed_value).strip()
+            original_str = str(processed_original_value).strip()
             current_str = str(current_value).strip()
             
             # 对 dimension 类字段，进行更宽松的比较（忽略内部空格差异）
             # 同时也适用于其他用*分隔的字符串
             if '*' in original_str or '*' in current_str:
                 if original_str.replace(' ', '') != current_str.replace(' ', ''):
-                    print(f"字段 '{key}' 已修改: '{processed_value}' -> '{current_value}'")
+                    print(f"字段 '{field_key}' 已修改: '{processed_original_value}' -> '{current_value}'")
+                    return True
+            # 对列表类型进行特殊处理
+            elif isinstance(original_value, list) and field_type == 'multiselect':
+                # 确保 current_value 是列表格式
+                if not isinstance(current_value, list):
+                    current_list = [current_value] if current_value else []
+                else:
+                    current_list = current_value
+                    
+                if set(original_value) != set(current_list):
+                    print(f"字段 '{field_key}' 已修改 (列表): {original_value} -> {current_list}")
                     return True
             else:
                 # 其他字段，正常比较
                 if original_str != current_str:
-                    print(f"字段 '{key}' 已修改: '{processed_value}' -> '{current_value}'")
+                    print(f"字段 '{field_key}' 已修改: '{processed_original_value}' -> '{current_value}'")
                     return True
-            
-            # 对比checkbox值
-            if field.get('has_checkbox') and checkbox_idx < len(current_checkbox_values):
-                original_checkbox = attrs.get(f"chk_{key}", False)
-                current_checkbox = current_checkbox_values[checkbox_idx]
+
+            # 比较复选框值
+            if field.get('has_checkbox'):
+                chk_key = f"chk_{field_key}"
+                chk_id = f"{field_id}_checkbox"  # 直接构造checkbox的ID
+                original_checkbox = attrs.get(chk_key, False)
+                current_checkbox = value_map.get(chk_id, False)
                 if original_checkbox != current_checkbox:
-                    print(f"复选框 '{key}' 已修改: {original_checkbox} -> {current_checkbox}")
+                    print(f"复选框 '{field_key}' 已修改: {original_checkbox} -> {current_checkbox}")
                     return True
-                checkbox_idx += 1
         
         return False
     
-    def check_and_nav_prev(self, user_uid, index, model_id, *field_values_and_checkboxes):
+    def check_and_nav_prev(self, user_uid, index, model_id, *values):
         """检查并导航到上一个"""
-        return self._check_and_nav(user_uid, index, model_id, "prev", *field_values_and_checkboxes)
+        return self._check_and_nav(user_uid, index, model_id, "prev", *values)
     
-    def check_and_nav_next(self, user_uid, index, model_id, *field_values_and_checkboxes):
+    def check_and_nav_next(self, user_uid, index, model_id, *values):
         """检查并导航到下一个"""
-        return self._check_and_nav(user_uid, index, model_id, "next", *field_values_and_checkboxes)
+        return self._check_and_nav(user_uid, index, model_id, "next", *values)
     
-    def _check_and_nav(self, user_uid, index, model_id, direction, *field_values_and_checkboxes):
+    def _check_and_nav(self, user_uid, index, model_id, direction, *values):
         """导航检查：对比当前值与数据库值，如果有差异显示弹窗，否则直接跳转"""
-        if self.has_real_changes(user_uid, index, model_id, *field_values_and_checkboxes):
+        if self.has_real_changes(user_uid, index, model_id, *values):
             # 有修改，显示弹窗，记录方向
             # 返回与 nav_outputs 数量匹配的 gr.update()
             num_load_outputs = len(self.load_outputs)
@@ -844,13 +701,23 @@ class TaskManager:
             return updates + [gr.update(visible=True), gr.update(value=direction)]
         else:
             # 无修改，直接跳转并加载新数据
-            new_index, _ = self._go_direction(index, model_id, direction)
+            # 确保使用最新的索引
+            resolved_index, _ = self._resolve_model(index, model_id)
+            new_index, _ = self._go_direction(resolved_index, model_id, direction)
             new_data = self.load_data(new_index, user_uid)
             return [new_index] + new_data + [gr.update(visible=False), gr.update()]
     
     def _go_direction(self, index, model_id, direction):
         """根据方向导航, 返回 (new_index, new_model_id)"""
+        # 确保visible_keys是最新的
+        self._refresh_visible_keys(self.user_uid)
+        
         resolved_index, _ = self._resolve_model(index, model_id)
+        
+        # 检查visible_keys是否为空
+        if not self.visible_keys:
+            return 0, ""
+            
         if direction == "prev":
             new_index = max(0, resolved_index - 1)
         else:
@@ -859,29 +726,34 @@ class TaskManager:
         new_model_id = self.visible_keys[new_index] if new_index < len(self.visible_keys) else ""
         return new_index, new_model_id
     
-    def save_and_continue_nav(self, user_uid, index, model_id, direction, *field_values_and_checkboxes):
-        """保存并继续"""
+    def save_and_continue_nav(self, direction, user_uid, index, model_id, *values):
+        """保存并继续 (重构版)"""
         # 先保存
-        save_result_payload = self.save_data(user_uid, index, model_id, *field_values_and_checkboxes)
+        save_result_payload = self.save_data(user_uid, index, model_id, *values)
         
         # 检查保存是否成功
-        has_error = any(isinstance(item, str) and "❌ 保存失败" in item for item in save_result_payload)
+        has_error = any(isinstance(item, str) and "❌ 保存失败" in item for item in save_result_payload if isinstance(item, str))
         
         if has_error:
             # 保存失败, 不导航, 保持弹窗可见, 并更新UI以显示错误信息
             resolved_index, _ = self._resolve_model(index, model_id)
             return [resolved_index] + save_result_payload + [gr.update(visible=True)]
         
-        # 保存成功, 执行导航并加载新数据
-        new_index, _ = self._go_direction(index, model_id, direction)
-        # 确保user_uid是函数参数
+        # 保存成功后，获取当前索引（可能已经在save_data中更新）
+        current_index = self.components['current_index'].value
+        
+        # 执行导航并加载新数据
+        new_index, _ = self._go_direction(current_index, model_id, direction)
         new_data = self.load_data(new_index, user_uid)
         return [new_index] + new_data + [gr.update(visible=False)]
     
     def skip_and_continue_nav(self, user_uid, index, model_id, direction):
         """放弃修改并继续"""
+        # 确保使用最新的索引
+        resolved_index, _ = self._resolve_model(index, model_id)
+        
         # 执行导航并加载新数据
-        new_index, _ = self._go_direction(index, model_id, direction)
+        new_index, _ = self._go_direction(resolved_index, model_id, direction)
         new_data = self.load_data(new_index, user_uid)
         return [new_index] + new_data + [gr.update(visible=False)]
     

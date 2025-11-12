@@ -25,6 +25,7 @@ class ComponentFactory:
             "button": self._create_button,
             "slider": self._create_slider,
             "checkbox": self._create_checkbox,
+            "multiselect": self._create_multiselect,
         }
         
         # 存储创建的组件（用于后续引用）
@@ -139,6 +140,16 @@ class ComponentFactory:
             elem_id=config.get("id")
         )
     
+    def _create_multiselect(self, config: Dict) -> gr.Dropdown:
+        """创建多选下拉框组件"""
+        return gr.Dropdown(
+            label=None,
+            show_label=False,
+            multiselect=True,
+            interactive=bool(config.get("interactive", True)),
+            elem_id=config.get("id")
+        )
+
     def build_layout(self, components_config: List[Dict], layout_config: Dict):
         """
         构建布局
@@ -261,14 +272,17 @@ class ComponentFactory:
             return
 
         # 对textbox进行特殊的外部标签处理
-        if comp_config.get("type") == "textbox":
+        comp_type = comp_config.get("type")
+
+        # 对需要外部标签的组件进行统一处理
+        if comp_type in ["textbox", "multiselect"]:
             with gr.Column(elem_id=f"{comp_id}_container", min_width=0):
                 # 如果有标签，处理标签和可能的复选框
                 if comp_config.get("label"):
                     label_text = comp_config.get("label")
                     
                     if comp_config.get("has_checkbox", False):
-                        # 有复选框：将标签和复选框合并，以解决对齐问题并恢复旧版UI
+                        # 有复选框：将标签和复选框合并
                         checkbox_label_char = comp_config.get('checkbox_label', '✗')
                         full_label = f"{checkbox_label_char} {label_text}"
                         
@@ -285,7 +299,7 @@ class ComponentFactory:
                         style += " min-height: 28px; display: flex; align-items: center;"
                         gr.Markdown(f"<div style='{style}'>{label_text}</div>")
                 
-                # 创建文本框组件本身
+                # 创建组件本身
                 self.create_component(comp_config)
         else:
             # 对所有其他类型的组件，正常创建

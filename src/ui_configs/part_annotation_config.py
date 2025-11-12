@@ -26,7 +26,7 @@ COMPONENTS = [
         "id": "annotation_status",
         "type": "html",
         "value": "",
-        "data_field": "_computed_status"
+        "data_field": "_computed_status"  # 用于显示标注状态
     },
     
     # 三张图片（第二行）
@@ -59,6 +59,7 @@ COMPONENTS = [
         # "checkbox_label": "✗",
         "column": "left",
         "interactive": False,  # 设置为不可编辑
+        "data_field": "object_name"  # 添加数据字段映射
     },
     {
         "id": "object_dimension",
@@ -70,6 +71,7 @@ COMPONENTS = [
         "placeholder": "例如: 0.78*0.41*0.54",
         "column": "left",
         "interactive": False,  # 设置为不可编辑
+        "data_field": "object_dimension"  # 添加数据字段映射
     },
     {
         "id": "label",
@@ -78,16 +80,17 @@ COMPONENTS = [
         "lines": 1,
         "has_checkbox": True,
         "checkbox_label": "✗",
-        "column": "left"
+        "column": "left",
+        "data_field": "label"  # 添加数据字段映射
     },
     {
         "id": "material",
-        "type": "textbox",
+        "type": "multiselect",
         "label": "材质",
-        "lines": 1,
         "has_checkbox": True,
         "checkbox_label": "✗",
-        "column": "right"
+        "column": "right",
+        "data_field": "material"  # 添加数据字段映射
     },
     # {
     #     "id": "density",
@@ -107,7 +110,8 @@ COMPONENTS = [
         "has_checkbox": True,
         "checkbox_label": "✗",
         "placeholder": "例如: 25 kg",
-        "column": "right"
+        "column": "right",
+        "data_field": "mass"  # 添加数据字段映射
     },
     
     # 进度显示
