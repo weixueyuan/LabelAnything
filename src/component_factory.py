@@ -288,7 +288,7 @@ class ComponentFactory:
                         
                         checkbox = gr.Checkbox(
                             label=full_label,
-                            value=False,
+                            value=False,  # 默认值，实际值会在load_data中设置
                             container=False,
                             elem_id=f"{comp_id}_checkbox"
                         )

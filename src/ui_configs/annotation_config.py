@@ -73,26 +73,27 @@ COMPONENTS = [
         # data_field 默认为 "material"
     },
     {
-        "id": "dimensions",
+        "id": "dimension",
         "type": "textbox",
-        "label": "Dimensions (尺寸)",
+        "label": "尺寸（X ✖️ Y  ✖️ Z）",
         "lines": 1,
         "has_checkbox": True,
         "checkbox_label": "✗",
-        "placeholder": "例如: 0.6 * 0.4 * 0.02",
+        "placeholder": "例如: 0.78*0.41*0.54",
         "process": None,
-        "data_field": "dimensions"  # 明确指定（用于尺度滑块）
+        "data_field": "dimension"  # 明确指定（用于尺度滑块）
     },
-    # 尺度滑块（紧跟在dimensions下方）
+    # 尺度滑块（紧跟在dimension下方）
     {
         "id": "scale_slider",
         "type": "slider",
         "label": "🔧 尺度调整",
-        "minimum": 0.01,
-        "maximum": 2.0,
+        "minimum": 0.0,
+        "maximum": 10.0,
         "value": 1.0,
         "step": 0.01,
-        "target_field": "dimensions"  # 关联到dimensions字段
+        "target_field": "dimension",  # 关联到dimension字段
+        "data_field": "scale"  # 显式指定数据库字段名
     },
     {
         "id": "placement",
@@ -111,7 +112,8 @@ COMPONENTS = [
         "id": "progress_box",
         "type": "textbox",
         "label": "进度",
-        "lines": 1
+        "lines": 1,
+        "interactive": False
     },
     
     # 按钮
@@ -170,10 +172,10 @@ LAYOUT_CONFIG = {
                         "material",
                         {
                             "type": "vstack",
-                            "elem_id": "dimensions_block",
+                            "elem_id": "dimension_block",
                             "children": [
-                                "dimensions",
-                                "scale_slider"  # 尺度滑块紧跟dimensions
+                                "dimension",
+                                "scale_slider"  # 尺度滑块紧跟dimension
                             ]
                         },
                         "placement",
@@ -334,7 +336,7 @@ CUSTOM_CSS = """
 }
 
 /* 尺寸与尺度组合块 */
-#dimensions_block {
+#dimension_block {
     display: flex !important;
     flex-direction: column !important;
     gap: 10px !important;
@@ -343,20 +345,20 @@ CUSTOM_CSS = """
     border: 1px solid rgba(0, 0, 0, 0.08);
     border-radius: 10px;
 }
-#dimensions_block > .gradio-column,
-#dimensions_block > .gradio-row {
+#dimension_block > .gradio-column,
+#dimension_block > .gradio-row {
     width: 100% !important;
 }
-#dimensions_block #dimensions {
+#dimension_block #dimension {
     margin-bottom: 0 !important;
 }
-#dimensions_block #scale_slider {
+#dimension_block #scale_slider {
     width: 100% !important;
 }
-#dimensions_block .gradio-slider {
+#dimension_block .gradio-slider {
     width: 100% !important;
 }
-#dimensions_checkbox {
+#dimension_checkbox {
     display: none !important;
 }
 

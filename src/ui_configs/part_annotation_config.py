@@ -119,7 +119,8 @@ COMPONENTS = [
         "id": "progress_box",
         "type": "textbox",
         "label": "进度",
-        "lines": 1
+        "lines": 1,
+        "interactive": False
     },
     
     # 按钮

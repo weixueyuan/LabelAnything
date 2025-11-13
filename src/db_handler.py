@@ -24,12 +24,6 @@ class DatabaseHandler:
         # 初始化数据库
         init_database(db_path)
         self.session = get_session(db_path)
-        
-        # 已知的字段配置（用于处理特殊字段）
-        self.field_configs = {
-            'placement': {'key': 'placement', 'process': 'array_to_string'},
-            # 可以添加其他需要特殊处理的字段
-        }
     
     def load_data(self) -> Dict[str, Annotation]:
         """加载所有数据"""
@@ -306,7 +300,15 @@ class DatabaseHandler:
         
         # 生成文件名（带日期时间戳）
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"export_{timestamp}.jsonl"
+        
+        # 从数据库路径中提取任务名
+        try:
+            # 例如: databases/part_annotation.db -> part_annotation
+            task_name = os.path.basename(self.db_path).replace('.db', '')
+        except Exception:
+            task_name = "export" # 提取失败时的备用名
+            
+        filename = f"{task_name}_{timestamp}.jsonl"
         filepath = os.path.join(output_dir, filename)
         
         try:

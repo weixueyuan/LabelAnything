@@ -61,12 +61,14 @@ class TaskManager:
                 'data_field': comp.get('data_field', comp['id']) # 显式存储
             }
             for comp in self.components_config
-            if comp.get('data_field') is not None and comp.get('type') not in ['button', 'slider']
+            if (comp.get('type') == 'textbox' and comp.get('interactive', True)) or \
+               comp.get('type') == 'multiselect' or \
+               comp.get('type') == 'slider'
         ]
-        
+       
         # 数据库路径
         self.db_path = f"databases/{self.task_name}.db"
-        
+       
         # 初始化
         self.field_processor = FieldProcessor()
         self._load_data()
@@ -169,10 +171,10 @@ class TaskManager:
         # 打印调试信息
         print(f"滑块状态: has_slider={self.has_slider}, target_fields={self.slider_target_fields}")
         
-        # 只有在存在滑块组件时才创建original_dimensions组件
+        # 只有在存在滑块组件时才创建original_values_state组件
         if self.has_slider:
-            print(f"✓ 创建滑块相关状态组件: original_dimensions")
-            self.components['original_dimensions'] = gr.State(value="")  # 存储原始值
+            print(f"✓ 创建滑块相关状态组件: original_values_state")
+            self.components['original_values_state'] = gr.State(value={})  # 存储原始值
         else:
             print(f"ℹ️ 当前任务不需要滑块组件，跳过创建相关组件")
         
@@ -255,7 +257,14 @@ class TaskManager:
         
         # 添加滑块的状态组件（如果存在）
         if self.has_slider:
-            self.load_outputs.append(self.components['original_dimensions'])
+            self.load_outputs.append(self.components['original_values_state'])
+        
+        # 将滑块组件也加入 self.interactive_components
+        for comp_config in self.components_config:
+            if comp_config.get('type') == 'slider':
+                slider_comp = self.components.get(comp_config['id'])
+                if slider_comp and slider_comp not in self.interactive_components:
+                    self.interactive_components.append(slider_comp)
 
         # 4. 构建事件的输入列表
         # 用于保存和导航检查的输入列表
@@ -264,6 +273,10 @@ class TaskManager:
             core_inputs['current_index'],
             core_inputs['model_id']
         ] + self.interactive_components
+        
+        # 如果有滑块，将原始值状态也作为输入
+        if self.has_slider:
+            event_inputs.append(self.components['original_values_state'])
 
         # 5. 绑定事件
         # 页面加载
@@ -335,15 +348,35 @@ class TaskManager:
             for target_key in self.slider_target_fields:
                 target_comp = self.field_component_map.get(target_key)
                 if target_comp:
-                    scale_slider.change(
-                        fn=self.scale_dimensions,
-                        inputs=[self.components['original_dimensions'], scale_slider],
-                        outputs=[target_comp]
-                    )
+                    # 查找对应的滑块组件配置
+                    slider_config = next((c for c in self.components_config
+                                         if c['id'] == scale_slider.elem_id), None)
+                    
+                    if slider_config:
+                        # 创建一个闭包函数，用于处理特定目标字段的缩放
+                        def create_scale_fn(target_field):
+                            def scale_fn(original_values_state, scale_value):
+                                try:
+                                    # original_values_state 现在是字典，无需JSON解析
+                                    original_value = original_values_state.get(target_field, '')
+                                    return self.scale_dimensions(original_value, scale_value)
+                                except Exception as e:
+                                    print(f"⚠️ 缩放计算错误: {e}")
+                                    return ""
+                            return scale_fn
+                        
+                        # 绑定事件，使用闭包函数
+                        scale_slider.change(
+                            fn=create_scale_fn(target_key),
+                            inputs=[self.components['original_values_state'], scale_slider],
+                            outputs=[target_comp]
+                        )
     
     def load_data(self, index, user_uid):
         """根据组件配置动态加载数据 (重构版)"""
-        print(f"\n加载数据: index={index}, user_uid={user_uid}")
+        print(f"\n{'='*50}")
+        print(f"加载数据: index={index}, user_uid={user_uid}")
+        print(f"{'='*50}")
         self._refresh_visible_keys(user_uid)
 
         # 确定要加载的数据属性
@@ -367,30 +400,36 @@ class TaskManager:
 
         # 根据 self.load_outputs 动态构建返回值
         result = []
-        original_dims_value = ""
+        # 使用字典存储所有滑块目标字段的原始值，键为字段名
+        original_values = {}
         for comp in self.load_outputs:
             comp_id = comp.elem_id
             
-            # 在 components_config 中查找该组件的配置
-            comp_config = next((c for c in self.components_config if c['id'] == comp_id), None)
+            # 重新设计的配置查找逻辑
+            is_checkbox = comp_id is not None and comp_id.endswith('_checkbox')
+            lookup_id = comp_id.replace('_checkbox', '') if is_checkbox else comp_id
+            
+            comp_config = next((c for c in self.components_config if c['id'] == lookup_id), None)
+            
             if not comp_config:
-                # 处理特殊组件，如 original_dimensions state
-                if comp_id == 'original_dimensions':
-                    result.append(original_dims_value)
+                # 处理特殊组件，如 original_values_state state
+                if comp_id is None and isinstance(comp, gr.State):
+                    # 假设这是 original_values_state
+                    result.append(original_values)
                 else:
-                    result.append(None) # 或者 gr.update()
+                    print(f"⚠️ 警告: 在 load_data 中未找到组件 '{comp_id}' (lookup_id: '{lookup_id}') 的配置。")
+                    result.append(gr.update()) # 或者 gr.update()
                 continue
 
-            data_field = comp_config.get('data_field', comp_id)
+            data_field = comp_config.get('data_field', comp_config['id'])
             comp_type = comp_config['type']
 
-            # 检查是否是复选框组件
-            is_checkbox = comp_id.startswith('chk_')
-
             if is_checkbox:
-                # 从 'chk_field_name' 中提取 'field_name'
-                field_key = comp_id.replace('chk_', '', 1)
-                result.append(attrs.get(f"chk_{field_key}", False))
+                # 现在我们已经有了正确的 comp_config
+                field_key = comp_config.get('data_field', comp_config['id'])
+                checkbox_value = attrs.get(f"chk_{field_key}", False)
+                print(f"加载复选框 '{comp_id}' (字段: {field_key}): 数据库值={checkbox_value}")
+                result.append(gr.update(value=checkbox_value))
             elif data_field == 'model_id':
                 result.append(model_id)
             elif data_field == '_computed_status':
@@ -399,7 +438,13 @@ class TaskManager:
                 prog = f"{index + 1} / {len(self.visible_keys)}" if is_valid_item else "0 / 0"
                 result.append(prog)
             elif comp_id == 'scale_slider':
-                result.append(1.0)
+                # 优先从数据库加载，如果没有或无效则默认为1.0
+                value = attrs.get(data_field, 1.0)
+                try:
+                    value = float(value)
+                except (ValueError, TypeError):
+                    value = 1.0
+                result.append(value)
             elif comp_type == 'image':
                 img_path = attrs.get(data_field)
                 result.append(img_path if img_path and os.path.exists(img_path) else None)
@@ -416,10 +461,33 @@ class TaskManager:
                 result.append(gr.update(value=value, choices=choices))
             else: # Textbox, etc.
                 value = attrs.get(data_field, '')
-                processed_value = self.field_processor.process_load(comp_config, value)
-                result.append(processed_value)
+                
+                # 如果是滑块的目标字段，进行特殊处理
                 if self.has_slider and data_field in self.slider_target_fields:
-                    original_dims_value = value
+                    # 保存原始值到字典中，键为字段名
+                    original_values[data_field] = value
+                    
+                    # 查找对应的滑块组件配置
+                    slider_config = next((c for c in self.components_config
+                                         if c.get('type') == 'slider' and c.get('target_field') == data_field), None)
+                    
+                    if slider_config:
+                        slider_field = slider_config.get('data_field', slider_config['id'])
+                        scale_value = attrs.get(slider_field, 1.0)
+                        try:
+                            scale_value = float(scale_value)
+                        except (ValueError, TypeError):
+                            scale_value = 1.0
+                        
+                        # 调用 scale_dimensions 计算显示值
+                        display_value = self.scale_dimensions(value, scale_value)
+                        result.append(display_value)
+                    else:
+                        # 如果没有找到对应的滑块配置，直接使用原始值
+                        result.append(value)
+                else:
+                    processed_value = self.field_processor.process_load(comp_config, value)
+                    result.append(processed_value)
 
         return result
     
@@ -437,12 +505,25 @@ class TaskManager:
         if not original_dims or not original_dims.strip():
             return ""
         try:
-            parts = original_dims.replace('*', ' ').split()
+            # 支持多种分隔符: '*', 'x', '×', '✖️' 以及空格
+            parts = original_dims.replace('*', ' ').replace('x', ' ').replace('×', ' ').replace('✖️', ' ').split()
             numbers = [float(p.strip()) for p in parts if p.strip()]
             if not numbers:
                 return original_dims
             scaled_numbers = [n * scale_value for n in numbers]
-            result = ' * '.join([f"{n:.2f}" if n >= 0.01 else f"{n:.4f}" for n in scaled_numbers])
+            # 使用原始分隔符格式
+            if '*' in original_dims:
+                separator = ' * '
+            elif 'x' in original_dims:
+                separator = ' x '
+            elif '×' in original_dims:
+                separator = ' × '
+            elif '✖️' in original_dims:
+                separator = ' ✖️ '
+            else:
+                separator = ' '
+            
+            result = separator.join([f"{n:.2f}" if n >= 0.01 else f"{n:.4f}" for n in scaled_numbers])
             return result
         except Exception as e:
             print(f"⚠️  尺度计算错误: {e}")
@@ -465,6 +546,12 @@ class TaskManager:
         if resolved_model is None:
             return self.load_data(resolved_index, user_uid)
 
+        # 如果有滑块，最后一个值是 original_values_state (字典)
+        original_values = {}
+        if self.has_slider:
+            original_values = values[-1] if values and isinstance(values[-1], dict) else {}
+            values = values[:-1]
+
         # 安全地解析 *values
         value_map = {}
         value_idx = 0
@@ -484,12 +571,24 @@ class TaskManager:
             field_key = field['key']
             
             # 获取字段值
-            field_value = value_map.get(field_id)
-            
+            if self.has_slider and field_key in self.slider_target_fields:
+                # 如果是滑块的目标字段，从 state 获取原始值
+                field_value = original_values.get(field_key, value_map.get(field_id, ''))
+            elif field.get('type') == 'slider':
+                # 对滑块字段进行特殊处理
+                raw_value = value_map.get(field_id)
+                try:
+                    # 确保保存的是浮点数，如果为空或无效则保存为1.0
+                    field_value = float(raw_value) if raw_value is not None and str(raw_value).strip() != "" else 1.0
+                except (ValueError, TypeError):
+                    field_value = 1.0
+            else:
+                field_value = value_map.get(field_id)
+
             # 对于 multiselect 类型的字段，确保值是列表格式
             if field.get('type') == 'multiselect' and not isinstance(field_value, list):
                 field_value = [field_value] if field_value else []
-            
+
             attributes[field_key] = self.field_processor.process_save(field, field_value)
             print(f"保存字段: {field_key} = {attributes[field_key]}")
 
@@ -497,6 +596,8 @@ class TaskManager:
             if field.get('has_checkbox'):
                 chk_id = f"{field_id}_checkbox"  # 直接构造checkbox的ID
                 chk_value = value_map.get(chk_id, False)
+                # 添加调试日志
+                print(f"保存复选框 '{chk_id}' (字段: {field_key}): UI值={chk_value}")
                 attributes[f"chk_{field_key}"] = chk_value
                 if chk_value:
                     has_error = True
@@ -544,20 +645,33 @@ class TaskManager:
             # 保存成功
             print(f"✅ 保存: {resolved_model}, score={score}, uid={user_uid}")
             
-            # 重新加载数据（简单直接）
-            self.all_data = self.data_handler.load_data()
+            # 更新内存中的缓存 (self.all_data) 以反映刚刚的保存
+            # 这种方法比重新加载所有数据更高效，并能避免潜在的会话缓存问题
+            updated_item = self.data_handler.get_item(resolved_model)
+            if updated_item:
+                self.all_data[resolved_model] = updated_item
+                # 添加调试日志，查看保存后的数据
+                print(f"更新缓存数据: {resolved_model} = {updated_item.to_dict()}")
+            else:
+                # 如果由于某种原因找不到项目（不太可能），则回退到完全重新加载
+                print("警告: 无法获取更新后的项目，回退到完全重新加载")
+                self.all_data = self.data_handler.load_data()
             
             # 重新计算可见键
             visible_keys = self._refresh_visible_keys(user_uid)
+            print(f"重新计算可见键: {len(visible_keys)} 个项目")
             
             # 确保索引在有效范围内
             if resolved_model in visible_keys:
                 new_index = visible_keys.index(resolved_model)
             else:
                 new_index = min(resolved_index, len(visible_keys) - 1) if visible_keys else 0
+            print(f"新索引: {new_index}")
             
             # 返回更新后的数据
-            return self.load_data(new_index, user_uid)
+            load_result = self.load_data(new_index, user_uid)
+            print(f"保存后加载数据完成")
+            return load_result
     
     def search_and_load(self, user_uid, search_value):
         """
@@ -609,6 +723,10 @@ class TaskManager:
         # 打印调试信息，帮助诊断问题
         print(f"比较数据 - ID: {current_model_id}, 用户: {user_uid}")
         
+        # 如果有滑块，最后一个值是 original_dimensions，比较时忽略
+        if self.has_slider:
+            values = values[:-1]
+
         # 安全地解析 *values
         value_map = {}
         value_idx = 0
@@ -639,7 +757,15 @@ class TaskManager:
             processed_original_value = self.field_processor.process_load(field, original_value)
             if processed_original_value is None:
                 processed_original_value = ""
-                
+
+            # 如果是滑块的目标字段，current_value 应该是原始值，而不是UI上计算后的值
+            # 但在这种情况下，我们其实不需要比较 dimension 本身，
+            # 因为它的“变化”体现在滑块上。
+            # 我们真正需要比较的是 scale_slider 的值。
+            # 因此，我们在这里跳过 dimension 字段的比较。
+            if self.has_slider and field_key in self.slider_target_fields:
+                continue
+
             current_value = value_map.get(field_id)
             if current_value is None:
                 current_value = ""
@@ -653,6 +779,25 @@ class TaskManager:
             if '*' in original_str or '*' in current_str:
                 if original_str.replace(' ', '') != current_str.replace(' ', ''):
                     print(f"字段 '{field_key}' 已修改: '{processed_original_value}' -> '{current_value}'")
+                    return True
+            # 对滑块进行特殊处理
+            elif field_type == 'slider':
+                # 归一化原始值
+                try:
+                    original_float = float(original_value) if original_value is not None and str(original_value).strip() != "" else 1.0
+                except (ValueError, TypeError):
+                    original_float = 1.0
+
+                # 归一化当前值
+                current_value = value_map.get(field_id)
+                try:
+                    current_float = float(current_value) if current_value is not None and str(current_value).strip() != "" else 1.0
+                except (ValueError, TypeError):
+                    current_float = 1.0
+
+                # 比较浮点数
+                if original_float != current_float:
+                    print(f"字段 '{field_key}' 已修改 (slider): {original_float} -> {current_float}")
                     return True
             # 对列表类型进行特殊处理
             elif isinstance(original_value, list) and field_type == 'multiselect':
@@ -677,6 +822,8 @@ class TaskManager:
                 chk_id = f"{field_id}_checkbox"  # 直接构造checkbox的ID
                 original_checkbox = attrs.get(chk_key, False)
                 current_checkbox = value_map.get(chk_id, False)
+                # 添加调试日志
+                print(f"比较复选框 '{field_key}': 数据库值={original_checkbox}, UI值={current_checkbox}")
                 if original_checkbox != current_checkbox:
                     print(f"复选框 '{field_key}' 已修改: {original_checkbox} -> {current_checkbox}")
                     return True

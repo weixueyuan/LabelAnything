@@ -51,18 +51,16 @@ COMPONENTS = [
         "lines": 1,
         "has_checkbox": True,
         "checkbox_label": "✗",
-        "process": None
         # data_field 默认为 "object_name"
     },
     {
         "id": "dimension",
         "type": "textbox",
-        "label": "尺寸（X ✖️ Y  ✖️ Z）",
+        "label": "尺寸 (X*Y*Z)",
         "lines": 1,
-        # "has_checkbox": True,
-        # "checkbox_label": "✗",
+        "has_checkbox": True,
+        "checkbox_label": "✗",
         "placeholder": "例如: 0.78*0.41*0.54",
-        "process": None,
         "data_field": "dimension"  # 明确指定（用于尺度滑块）
     },
     # 尺度滑块（紧跟在dimension下方）
@@ -74,7 +72,8 @@ COMPONENTS = [
         "maximum": 10.0,
         "value": 1.0,
         "step": 0.01,
-        "target_field": "dimension"  # 关联到dimension字段
+        "target_field": "dimension",  # 关联到dimension字段
+        "data_field": "scale_slider"  # 明确指定（用于保存）
     },
     {
         "id": "overall_description",
@@ -83,7 +82,6 @@ COMPONENTS = [
         "lines": 3,
         "has_checkbox": True,
         "checkbox_label": "✗",
-        "process": "array_to_string"
         # data_field 默认为 "overall_description"
     },
     
@@ -92,7 +90,8 @@ COMPONENTS = [
         "id": "progress_box",
         "type": "textbox",
         "label": "进度",
-        "lines": 1
+        "lines": 1,
+        "interactive": False
     },
     
     # 按钮
