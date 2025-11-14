@@ -58,8 +58,8 @@ COMPONENTS = [
         "type": "textbox",
         "label": "尺寸 (X*Y*Z)",
         "lines": 1,
-        "has_checkbox": True,
-        "checkbox_label": "✗",
+        # "has_checkbox": True,
+        # "checkbox_label": "✗",
         "placeholder": "例如: 0.78*0.41*0.54",
         "data_field": "dimension"  # 明确指定（用于尺度滑块）
     },

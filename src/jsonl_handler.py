@@ -106,79 +106,6 @@ class JSONLHandler:
         # 从缓存中获取
         return self._data_cache.get(model_id)
     
-    def get_item_attrs(self, model_id: str) -> Dict:
-        """
-        获取单条数据的属性字典
-        
-        Args:
-            model_id: 模型ID
-            
-        Returns:
-            属性字典
-        """
-        item = self.get_item(model_id)
-        if item:
-            return self.parse_item(item)
-        return {}
-    
-    def load_data_batch(self, batch_size: int = 100, page: int = 1) -> Dict:
-        """
-        分批加载数据（模拟实现，JSONL实际是一次性加载）
-        
-        Args:
-            batch_size: 每批数据量
-            page: 页码（从1开始）
-            
-        Returns:
-            批次数据信息字典
-        """
-        # 确保数据已加载
-        all_data = self.load_data()
-        
-        # 获取所有键并排序
-        keys = sorted(all_data.keys())
-        
-        # 计算偏移量和范围
-        offset = (page - 1) * batch_size
-        end_idx = min(offset + batch_size, len(keys))
-        
-        # 提取当前批次
-        batch_keys = keys[offset:end_idx] if offset < len(keys) else []
-        batch_data = {k: all_data[k] for k in batch_keys}
-        
-        return {
-            "data": batch_data,
-            "page": page,
-            "batch_size": batch_size,
-            "total_count": len(all_data),
-            "has_more": end_idx < len(keys)
-        }
-    
-    def load_visible_items(self, user_uid: str) -> Dict[str, JSONLItem]:
-        """
-        只加载当前用户可见的项目
-        
-        Args:
-            user_uid: 用户ID
-            
-        Returns:
-            可见数据字典
-        """
-        # 确保数据已加载
-        all_data = self.load_data()
-        
-        # 筛选可见项目
-        visible_items = {}
-        for model_id, item in all_data.items():
-            # 获取uid
-            uid = item.uid
-            
-            # 如果uid为空或等于当前用户，则可见
-            if not uid or uid == "" or uid == user_uid:
-                visible_items[model_id] = item
-                
-        return visible_items
-    
     def parse_item(self, item: JSONLItem) -> Dict:
         """解析单条数据（和 DatabaseHandler.parse_item 接口一致）"""
         if isinstance(item, JSONLItem):
@@ -270,7 +197,7 @@ class JSONLHandler:
         if os.path.exists(self.jsonl_path):
             backup_dir = os.path.join(os.path.dirname(self.jsonl_path), "backups")
             os.makedirs(backup_dir, exist_ok=True)
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            ts = datetime.now().strftime("%Y%m%d_%H%M")
             backup_file = os.path.join(backup_dir, f"backup_{ts}.jsonl")
             shutil.copy2(self.jsonl_path, backup_file)
         
@@ -297,20 +224,6 @@ class JSONLHandler:
                 f.write(json.dumps(line_obj, ensure_ascii=False) + '\n')
         
         print(f"💾 已保存到: {self.jsonl_path}")
-    
-    def get_statistics(self) -> Dict:
-        """获取统计信息（和 DatabaseHandler.get_statistics 接口一致）"""
-        if self._data_cache is None:
-            self._data_cache = self.load_data()
-        
-        total = len(self._data_cache)
-        annotated = sum(1 for item in self._data_cache.values() if item.annotated)
-        
-        return {
-            'total': total,
-            'annotated': annotated,
-            'pending': total - annotated
-        }
     
     def close(self):
         """关闭（占位方法，保持接口一致）"""
@@ -392,7 +305,7 @@ class JSONLHandler:
             raise OSError(error_msg) from e
         
         # 生成文件名（带日期时间戳）
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         filename = f"export_{timestamp}.jsonl"
         filepath = os.path.join(output_dir, filename)
         

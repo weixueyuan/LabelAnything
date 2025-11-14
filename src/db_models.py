@@ -58,10 +58,6 @@ class Annotation(Base):
         
         return result
     
-    def to_jsonl_format(self):
-        """转换为 JSONL 格式"""
-        return {self.model_id: self.to_dict()}
-
 
 
 

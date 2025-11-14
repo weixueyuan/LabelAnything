@@ -115,7 +115,7 @@ def create_task(task_name, description, port, base_task="annotation"):
     print("=" * 80)
     print(f"1. 准备 JSONL 格式的源数据文件")
     print(f"2. 运行导入命令:")
-    print(f"   python -m importers.annotation_importer \\")
+    print(f"   python -m importers.generic_importer \\")
     print(f"       --source your_data.jsonl \\")
     print(f"       --db databases/{task_name}.db")
     print()
@@ -160,7 +160,7 @@ def check_task(task_name):
         issues.append("数据库")
     
     # 检查routes.py
-    from routes import ROUTES
+    from src.routes import ROUTES
     found = False
     for route in ROUTES:
         if route['task'] == task_name:

@@ -238,7 +238,7 @@ class GenericImporter:
                             print(f"      {key}: {value_display}")
                             
                             # 特别关注图片URL字段
-                            if key.startswith('image _url'):
+                            if key.startswith('image_url'):
                                 print(f"        (图片路径已处理: {'是' if base_path and not value.startswith('/') else '否'})")
             except Exception as e:
                 print(f"⚠️ 无法打印示例记录: {e}")

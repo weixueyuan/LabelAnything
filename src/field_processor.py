@@ -80,33 +80,3 @@ class FieldProcessor:
         # 3. 默认：不处理，返回原值
         return value
     
-    @staticmethod
-    def get_checkbox_key(field_key: str) -> str:
-        """
-        获取勾选框的key
-        
-        Args:
-            field_key: 字段key
-            
-        Returns:
-            勾选框key（格式: chk_{field_key}）
-        """
-        return f"chk_{field_key}"
-    
-    @staticmethod
-    def extract_checkbox_keys(field_configs: list) -> list:
-        """
-        提取所有勾选框的key
-        
-        Args:
-            field_configs: 字段配置列表
-            
-        Returns:
-            勾选框key列表
-        """
-        return [
-            FieldProcessor.get_checkbox_key(f['key'])
-            for f in field_configs
-            if f.get('has_checkbox', False)
-        ]
-

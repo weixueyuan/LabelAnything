@@ -26,10 +26,8 @@ from src.routes import ROUTES, DEFAULT_PORT
 class TaskManager:
     """任务管理器"""
     
-    def __init__(self, task_config, user_uid="default_user", debug=False, export_dir="exports", default_allowed_path="/mnt"):
+    def __init__(self, task_config, initial_user_uid="pending_login", debug=False, export_dir="exports", default_allowed_path="/mnt"):
         self.task_config = task_config
-        # 保留user_uid作为初始值，但在函数中使用传入的user_uid
-        self.user_uid = user_uid
         self.task_name = task_config['task']
         self.debug = debug
         self.export_dir = export_dir  # 添加导出目录配置，解决硬编码问题
@@ -71,13 +69,13 @@ class TaskManager:
        
         # 初始化
         self.field_processor = FieldProcessor()
-        self._load_data()
+        self._load_data(initial_user_uid)
         
         # 组件引用
         self.components = {}
         self.factory = None
     
-    def _load_data(self):
+    def _load_data(self, user_uid):
         """加载数据（支持数据库模式和 JSONL debug 模式）"""
         # Debug 模式：使用 test.jsonl
         if self.debug:
@@ -116,7 +114,7 @@ class TaskManager:
         self.all_data = self.data_handler.load_data()
         
         # 过滤可见数据
-        self._refresh_visible_keys(self.user_uid)
+        self._refresh_visible_keys(user_uid)
         
         print(f"✓ 加载完成")
         print(f"  总数: {len(self.all_data)}, 可见: {len(self.visible_keys)}")
@@ -134,7 +132,7 @@ class TaskManager:
         self.visible_keys = visible_keys
         return visible_keys
     
-    def build_interface(self, demo, user_state):
+    def build_interface(self, demo, user_state, initial_user_uid):
         """
         在给定的Gradio Blocks实例中构建界面。
         这个方法不应该创建自己的Blocks实例。
@@ -147,7 +145,7 @@ class TaskManager:
         # 用户信息
         if self.ui_config.get('show_user_info'):
             other_count = len(self.all_data) - len(self.visible_keys)
-            self.components['user_info'] = gr.HTML(self._render_user_info(len(self.visible_keys), other_count, self.user_uid))
+            self.components['user_info'] = gr.HTML(self._render_user_info(len(self.visible_keys), other_count, initial_user_uid))
         
         # State组件
         self.components['current_index'] = gr.State(value=0)
@@ -850,14 +848,14 @@ class TaskManager:
             # 无修改，直接跳转并加载新数据
             # 确保使用最新的索引
             resolved_index, _ = self._resolve_model(index, model_id)
-            new_index, _ = self._go_direction(resolved_index, model_id, direction)
+            new_index, _ = self._go_direction(user_uid, resolved_index, model_id, direction)
             new_data = self.load_data(new_index, user_uid)
             return [new_index] + new_data + [gr.update(visible=False), gr.update()]
     
-    def _go_direction(self, index, model_id, direction):
+    def _go_direction(self, user_uid, index, model_id, direction):
         """根据方向导航, 返回 (new_index, new_model_id)"""
         # 确保visible_keys是最新的
-        self._refresh_visible_keys(self.user_uid)
+        self._refresh_visible_keys(user_uid)
         
         resolved_index, _ = self._resolve_model(index, model_id)
         
@@ -890,7 +888,7 @@ class TaskManager:
         current_index = self.components['current_index'].value
         
         # 执行导航并加载新数据
-        new_index, _ = self._go_direction(current_index, model_id, direction)
+        new_index, _ = self._go_direction(user_uid, current_index, model_id, direction)
         new_data = self.load_data(new_index, user_uid)
         return [new_index] + new_data + [gr.update(visible=False)]
     
@@ -900,7 +898,7 @@ class TaskManager:
         resolved_index, _ = self._resolve_model(index, model_id)
         
         # 执行导航并加载新数据
-        new_index, _ = self._go_direction(resolved_index, model_id, direction)
+        new_index, _ = self._go_direction(user_uid, resolved_index, model_id, direction)
         new_data = self.load_data(new_index, user_uid)
         return [new_index] + new_data + [gr.update(visible=False)]
     
@@ -994,7 +992,7 @@ class TaskManager:
         return [self.default_allowed_path]
 
 
-def create_login_interface(auth_handler, task_config, debug, dev_user=None):
+def create_login_interface(auth_handler, task_config, debug, dev_user=None, export_dir="exports"):
     """
     创建统一的登录和标注界面，登录成功后直接切换显示
     
@@ -1003,16 +1001,17 @@ def create_login_interface(auth_handler, task_config, debug, dev_user=None):
         task_config: 任务配置
         debug: 是否为调试模式
         dev_user: 开发模式用户，如果指定则自动跳过登录
+        export_dir: 导出目录路径，默认为 "exports"
     """
     
     # 统一创建任务管理器，使用 dev_user 或一个临时的占位用户
     initial_user = dev_user if dev_user else "pending_login"
-    manager = TaskManager(task_config, initial_user, debug=debug)
+    manager = TaskManager(task_config, initial_user_uid=initial_user, debug=debug, export_dir=export_dir)
 
     # 如果数据未初始化，直接返回错误提示
     if not manager.data_handler:
         with gr.Blocks() as error_demo:
-            gr.Markdown("# ⚠️ 数据库未初始化\n运行: `python -m importers.annotation_importer`")
+            gr.Markdown("# ⚠️ 数据库未初始化\n运行: `python -m importers.generic_importer`")
         return error_demo, None
 
     # 创建界面
@@ -1034,7 +1033,7 @@ def create_login_interface(auth_handler, task_config, debug, dev_user=None):
         # 标注界面面板（登录后显示，如果是开发模式则初始显示）
         with gr.Column(visible=(dev_user is not None), elem_id="annotation_panel") as annotation_panel:
             # 总是构建界面
-            manager.build_interface(unified_demo, user_state)
+            manager.build_interface(unified_demo, user_state, initial_user)
         
         # 登录逻辑
         def do_login(username, password):
@@ -1050,9 +1049,6 @@ def create_login_interface(auth_handler, task_config, debug, dev_user=None):
             result = auth_handler.login(username, password)
             if result["success"]:
                 username_value = result["user"]["username"]
-                # 登录成功后，更新 manager.user_uid
-                manager.user_uid = username_value
-                
                 # 重新计算可见数据, 传递用户ID
                 manager._refresh_visible_keys(username_value)
                 
@@ -1106,6 +1102,7 @@ def main():
     parser.add_argument('-d', '--debug', action='store_true', help='Debug模式：使用test.jsonl文件')
     parser.add_argument('--dev', action='store_true', help='开发模式：跳过登录，直接使用指定用户')
     parser.add_argument('--uid', type=str, default='dev_user', help='开发模式下的用户ID（仅在--dev模式下使用）')
+    parser.add_argument('--export-dir', type=str, default='/mnt/inspurfs/IDC_t/lvzhaoyang_group/digital_content/lianxinyu/datasets/partnet_mobility_by_category_processed', help='导出目录路径（默认为 exports）')
     parser.add_argument('--list-tasks', action='store_true', help='列出所有可用任务')
     
     args = parser.parse_args()
@@ -1164,7 +1161,7 @@ def main():
         # 创建登录界面（即使是开发模式也使用统一界面，只是自动登录）
         from src.auth_handler import AuthHandler
         auth_handler = AuthHandler()
-        demo, manager = create_login_interface(auth_handler, task_config, args.debug, dev_user=user_uid)
+        demo, manager = create_login_interface(auth_handler, task_config, args.debug, dev_user=user_uid, export_dir=args.export_dir)
         
         # 如果 manager 为 None，说明数据库未初始化，直接退出
         if manager is None:
@@ -1194,7 +1191,7 @@ def main():
         print(f"{'='*60}\n")
         
         # 创建登录界面
-        demo, manager = create_login_interface(auth_handler, task_config, args.debug)
+        demo, manager = create_login_interface(auth_handler, task_config, args.debug, export_dir=args.export_dir)
         
         # 如果 manager 为 None，说明数据库未初始化，直接退出
         if manager is None:

@@ -6,7 +6,6 @@ import json
 from typing import Dict, Any, Optional
 from sqlalchemy.exc import IntegrityError
 from .db_models import Annotation, get_session, init_database
-from .field_processor import FieldProcessor
 
 
 class DatabaseHandler:
@@ -20,7 +19,6 @@ class DatabaseHandler:
             db_path: 数据库文件路径
         """
         self.db_path = db_path
-        self.field_processor = FieldProcessor()
         # 初始化数据库
         init_database(db_path)
         self.session = get_session(db_path)
@@ -51,77 +49,6 @@ class DatabaseHandler:
             print(f"❌ 加载数据项失败: {model_id} - {e}")
             return None
             
-    def load_data_batch(self, batch_size: int = 100, page: int = 1) -> Dict:
-        """
-        分批加载数据
-        
-        Args:
-            batch_size: 每批数据量
-            page: 页码（从1开始）
-            
-        Returns:
-            批次数据信息字典
-        """
-        try:
-            # 计算偏移量
-            offset = (page - 1) * batch_size
-            
-            # 查询当前批次数据
-            annotations = self.session.query(Annotation) \
-                              .order_by(Annotation.model_id) \
-                              .offset(offset) \
-                              .limit(batch_size) \
-                              .all()
-            
-            # 构建数据字典
-            batch_data = {ann.model_id: ann for ann in annotations}
-            
-            # 获取总数（仅在第一页时查询，避免重复计算）
-            total_count = None
-            if page == 1:
-                total_count = self.session.query(Annotation).count()
-            
-            return {
-                "data": batch_data,
-                "page": page,
-                "batch_size": batch_size,
-                "total_count": total_count,
-                "has_more": len(annotations) == batch_size
-            }
-        except Exception as e:
-            print(f"❌ 批量加载数据失败: 页码={page}, 批次大小={batch_size} - {e}")
-            return {
-                "data": {},
-                "page": page,
-                "batch_size": batch_size,
-                "total_count": 0,
-                "has_more": False,
-                "error": str(e)
-            }
-            
-    def load_visible_items(self, user_uid: str) -> Dict[str, Annotation]:
-        """
-        只加载当前用户可见的项目
-        
-        Args:
-            user_uid: 用户ID
-            
-        Returns:
-            可见数据字典
-        """
-        try:
-            # 使用SQL筛选条件: uid为空 或 uid等于当前用户
-            items = self.session.query(Annotation) \
-                       .filter((Annotation.uid == user_uid) |
-                               (Annotation.uid == '') |
-                               (Annotation.uid.is_(None))) \
-                       .all()
-            
-            return {item.model_id: item for item in items}
-        except Exception as e:
-            print(f"❌ 加载用户可见数据失败: {user_uid} - {e}")
-            return {}
-    
     def parse_item(self, item: Annotation) -> Dict:
         """解析单条数据"""
         if isinstance(item, Annotation):
@@ -129,21 +56,6 @@ class DatabaseHandler:
             return result
         return {}
         
-    def get_item_attrs(self, model_id: str) -> Dict:
-        """
-        获取单条数据的属性字典
-        
-        Args:
-            model_id: 模型ID
-            
-        Returns:
-            属性字典
-        """
-        item = self.get_item(model_id)
-        if item:
-            return self.parse_item(item)
-        return {}
-    
     def assign_to_user(self, model_id: str, uid: str):
         """
         仅分配数据给用户（浏览即占有）
@@ -257,20 +169,6 @@ class DatabaseHandler:
                 "message": error_message
             }
     
-    def get_statistics(self) -> Dict:
-        """获取统计信息"""
-        try:
-            total = self.session.query(Annotation).count()
-            annotated = self.session.query(Annotation).filter_by(annotated=True).count()
-            return {
-                'total': total,
-                'annotated': annotated,
-                'pending': total - annotated
-            }
-        except Exception as e:
-            print(f"❌ 获取统计失败: {e}")
-            return {'total': 0, 'annotated': 0, 'pending': 0}
-    
     def export_to_jsonl(self, output_dir: str = "exports", filter_by_user=None, only_annotated=False) -> str:
         """
         导出数据库数据为JSONL文件
@@ -299,7 +197,7 @@ class DatabaseHandler:
             raise OSError(error_msg) from e
         
         # 生成文件名（带日期时间戳）
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         
         # 从数据库路径中提取任务名
         try:

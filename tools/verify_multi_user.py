@@ -8,7 +8,6 @@
 import sqlite3
 import sys
 from pathlib import Path
-from collections import Counter
 
 # 添加项目路径
 project_root = Path(__file__).parent.parent
@@ -20,7 +19,7 @@ def verify_multi_user(db_path="databases/annotation.db"):
     db_file = project_root / db_path
     if not db_file.exists():
         print(f"❌ 数据库不存在: {db_file}")
-        print(f"   请先运行: python -m importers.annotation_importer")
+        print(f"   请先运行: python -m importers.generic_importer")
         return
     
     print("🔍 多用户标注验证")
