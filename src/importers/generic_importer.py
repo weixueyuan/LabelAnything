@@ -20,6 +20,12 @@
     
     # 自定义路径
     python -m importers.generic_importer --source data.jsonl --db databases/custom.db
+    
+    # 导入并分配给分配员
+    python -m importers.generic_importer --task annotation --assign an1 an2 an3
+    
+    # 分配所有任务（包括已分配的）
+    python -m importers.generic_importer --task annotation --assign an1 an2 an3 --assign-all
 """
 
 import json
@@ -48,7 +54,7 @@ TASK_CONFIGS = {
         'source': 'database_jsonl/whole_annotation.jsonl',
         'db': 'databases/whole_annotation.db',
         'description': '整体物体标注',
-        'base_path': '/mnt/inspurfs/IDC_t/lvzhaoyang_group/digital_content/lianxinyu/datasets/partnet_mobility_by_category_processed'  # 默认图片基础路径
+        # 'base_path': '/mnt/inspurfs/IDC_t/lvzhaoyang_group/digital_content/lianxinyu/datasets/partnet_mobility_by_category_processed'  # 默认图片基础路径
     },
     'part_annotation': {
         'source': 'database_jsonl/part_annotation.jsonl',
@@ -123,6 +129,88 @@ class GenericImporter:
                     print(f"  处理图片路径: {key} = {business_data[key]}")
         
         return metadata, business_data
+    
+    def assign_tasks(self, db_path: str, annotators: list, only_unassigned: bool = True):
+        """
+        将任务平均分配给多个分配员
+        
+        Args:
+            db_path: 数据库文件路径
+            annotators: 分配员列表，如 ['an1', 'an2', 'an3']
+            only_unassigned: 是否只分配未分配的任务（uid为空），默认为True
+        """
+        if not annotators:
+            print("⚠️  未指定分配员，跳过分配")
+            return
+        
+        print(f"\n{'='*60}")
+        print(f"开始分配任务")
+        print(f"{'='*60}")
+        print(f"🗄️  数据库: {db_path}")
+        print(f"👥 分配员: {', '.join(annotators)}")
+        print(f"📋 分配模式: {'仅未分配任务' if only_unassigned else '所有任务'}")
+        
+        session = get_session(db_path)
+        
+        try:
+            # 查询需要分配的任务
+            if only_unassigned:
+                # 只查询未分配的任务（uid为空或空字符串）
+                tasks = session.query(Annotation).filter(
+                    (Annotation.uid == '') | (Annotation.uid.is_(None))
+                ).all()
+            else:
+                # 查询所有任务
+                tasks = session.query(Annotation).all()
+            
+            total_tasks = len(tasks)
+            num_annotators = len(annotators)
+            
+            if total_tasks == 0:
+                print(f"⚠️  没有需要分配的任务")
+                return
+            
+            print(f"📊 找到 {total_tasks} 个任务，需要分配给 {num_annotators} 个分配员")
+            
+            # 计算每个分配员应该分配的任务数
+            base_count = total_tasks // num_annotators
+            remainder = total_tasks % num_annotators
+            
+            # 分配任务
+            assignment_stats = {}
+            task_idx = 0
+            
+            for i, annotator in enumerate(annotators):
+                # 前 remainder 个分配员多分配一个任务
+                count = base_count + (1 if i < remainder else 0)
+                assignment_stats[annotator] = count
+                
+                # 分配任务
+                for _ in range(count):
+                    if task_idx < total_tasks:
+                        task = tasks[task_idx]
+                        task.uid = annotator
+                        task_idx += 1
+            
+            # 提交所有更改
+            session.commit()
+            
+            # 打印分配统计
+            print(f"\n{'='*60}")
+            print(f"✅ 分配完成！")
+            print(f"{'='*60}")
+            print(f"📊 分配统计:")
+            for annotator, count in assignment_stats.items():
+                percentage = count / total_tasks * 100 if total_tasks > 0 else 0
+                print(f"  {annotator:15s}: {count:4d} 个任务 ({percentage:5.1f}%)")
+            print(f"{'='*60}\n")
+            
+        except Exception as e:
+            session.rollback()
+            print(f"❌ 分配失败: {e}")
+            raise
+        finally:
+            session.close()
     
     def import_to_db(self, source: str, db_path: str, clean: bool = False, batch_size: int = 1000, base_path: str = None):
         """
@@ -275,6 +363,12 @@ def main():
   # 自定义路径
   python -m importers.generic_importer --source data.jsonl --db databases/custom.db
 
+  # 导入并分配给分配员
+  python -m importers.generic_importer --task annotation --assign an1 an2 an3
+
+  # 分配所有任务（包括已分配的）
+  python -m importers.generic_importer --task annotation --assign an1 an2 an3 --assign-all
+
 支持的任务:
 """
     )
@@ -295,6 +389,10 @@ def main():
                        help='列出所有支持的任务')
     parser.add_argument('--base-path', '-b', type=str,
                        help='图片路径的基础路径，用于拼接相对路径')
+    parser.add_argument('--assign', '-a', type=str, nargs='+',
+                       help='分配员列表，用于平均分配任务（如: --assign an1 an2 an3）')
+    parser.add_argument('--assign-all', action='store_true',
+                       help='分配所有任务（包括已分配的），默认只分配未分配的任务')
     
     args = parser.parse_args()
     
@@ -332,6 +430,10 @@ def main():
             # 使用任务配置中的基础路径，如果命令行参数有指定则优先使用命令行参数
             base_path = args.base_path or config.get('base_path')
             importer.import_to_db(source=source, db_path=db_path, clean=clean_mode, base_path=base_path)
+            
+            # 如果指定了分配员，执行分配
+            if args.assign:
+                importer.assign_tasks(db_path=db_path, annotators=args.assign, only_unassigned=not args.assign_all)
         
         print("\n🎉 所有任务导入完成！\n")
         return
@@ -368,6 +470,10 @@ def main():
         base_path = TASK_CONFIGS[args.task].get('base_path')
     
     importer.import_to_db(source=source, db_path=db_path, clean=clean_mode, base_path=base_path)
+    
+    # 如果指定了分配员，执行分配
+    if args.assign:
+        importer.assign_tasks(db_path=db_path, annotators=args.assign, only_unassigned=not args.assign_all)
     
     if args.task:
         print(f"✅ 可以运行: python src/main_multi.py --task {args.task} --dev --uid user1\n")
