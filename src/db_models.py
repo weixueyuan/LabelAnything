@@ -7,7 +7,7 @@
 - 不再依赖 db_config.py
 """
 
-from sqlalchemy import create_engine, Column, String, Integer, Boolean, Text, DateTime, Float, JSON
+from sqlalchemy import create_engine, Column, String, Integer, Boolean, Text, DateTime, Float, JSON, inspect, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
@@ -31,6 +31,7 @@ class Annotation(Base):
     annotated = Column(Boolean, default=False, nullable=False, comment='是否已标注')
     uid = Column(String(100), default='', nullable=False, comment='标注者ID')
     score = Column(Integer, default=1, nullable=False, comment='质量分数')
+    modified = Column(Boolean, default=False, nullable=False, comment='是否已修改（标注后数据是否发生变化）')
     
     # 业务数据（JSON格式，存储所有字段）
     data = Column(JSON, default={}, comment='业务数据JSON')
@@ -50,6 +51,7 @@ class Annotation(Base):
             'annotated': self.annotated,
             'uid': self.uid,
             'score': self.score,
+            'modified': self.modified,
         }
         
         # 合并业务数据
@@ -104,15 +106,48 @@ def get_session(db_path: str = None):
     return Session()
 
 
+def migrate_database(db_path: str = None):
+    """
+    迁移数据库：为现有表添加缺失的列（参考 score 的处理方式）
+    
+    Args:
+        db_path: 数据库文件路径
+    """
+    engine = get_engine(db_path)
+    
+    # 检查表是否存在
+    inspector = inspect(engine)
+    
+    if 'annotations' in inspector.get_table_names():
+        # 表已存在，检查列
+        columns = [col['name'] for col in inspector.get_columns('annotations')]
+        
+        # 检查并添加缺失的列（参考 score 的处理方式，设置默认值）
+        with engine.connect() as conn:
+            if 'modified' not in columns:
+                try:
+                    # 添加 modified 列，默认值为 False（参考 score 的 default=1）
+                    conn.execute(text("ALTER TABLE annotations ADD COLUMN modified BOOLEAN DEFAULT 0 NOT NULL"))
+                    conn.commit()
+                    print(f"✅ 已添加 modified 列到数据库: {db_path or 'annotations.db'}")
+                except Exception as e:
+                    print(f"⚠️  添加 modified 列时出错: {e}")
+                    conn.rollback()
+
+
 def init_database(db_path: str = None):
     """
-    初始化数据库（创建所有表）
+    初始化数据库（创建所有表，并迁移现有表）
     
     Args:
         db_path: 数据库文件路径
     """
     engine = get_engine(db_path)
     Base.metadata.create_all(engine)
+    
+    # 迁移现有数据库（添加缺失的列，参考 score 的处理方式）
+    migrate_database(db_path)
+    
     print(f"✅ 数据库初始化完成: {db_path or 'annotations.db'}")
 
 

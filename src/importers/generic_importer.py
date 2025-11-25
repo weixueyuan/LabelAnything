@@ -54,13 +54,13 @@ TASK_CONFIGS = {
         'source': 'database_jsonl/whole_annotation.jsonl',
         'db': 'databases/whole_annotation.db',
         'description': '整体物体标注',
-        # 'base_path': '/mnt/inspurfs/IDC_t/lvzhaoyang_group/digital_content/lianxinyu/datasets/partnet_mobility_by_category_processed'  # 默认图片基础路径
+        'base_path': '/root/data/Articulation-3000'  # 默认图片基础路径
     },
     'part_annotation': {
         'source': 'database_jsonl/part_annotation.jsonl',
         'db': 'databases/part_annotation.db',
         'description': '部件标注',
-        'base_path': '/mnt/inspurfs/IDC_t/lvzhaoyang_group/digital_content/lianxinyu/datasets/partnet_mobility_by_category_processed'  # 默认图片基础路径
+        'base_path': '/root/data/Articulation-3000'  # 默认图片基础路径
     },
     'test': {
         'source': 'database_jsonl/test.jsonl',
@@ -115,11 +115,12 @@ class GenericImporter:
             'annotated': attrs.get('annotated', False),
             'uid': attrs.get('uid', ''),
             'score': attrs.get('score', 1),
+            'modified': attrs.get('modified', False),  # 导入时默认为未修改
         }
         
         # 业务数据 - 通用处理
         # 业务数据 - 将除了元数据之外的所有字段都放入 business_data
-        business_data = {k: v for k, v in attrs.items() if k not in ['annotated', 'uid', 'score']}
+        business_data = {k: v for k, v in attrs.items() if k not in ['annotated', 'uid', 'score', 'modified']}
 
         # 如果提供了 base_path，处理所有以 image_url 开头的字段
         if base_path:
@@ -251,8 +252,22 @@ class GenericImporter:
                     if not record:
                         continue
                     
-                    model_id = list(record.keys())[0]
-                    attrs = record[model_id]
+                    # 检查 'id' 或 'model_id' 是否存在，并用它作为 model_id
+                    if 'id' in record:
+                        model_id = record.pop('id')
+                    elif 'model_id' in record:
+                        model_id = record.pop('model_id')
+                    else:
+                        # 如果都没有，使用旧的逻辑，但这可能会对扁平结构失败
+                        model_id = list(record.keys())[0]
+                        attrs = record[model_id]
+                        # 为扁平结构设置 attrs
+                        if not isinstance(attrs, dict):
+                            attrs = record
+                    
+                    # 如果 attrs 不是字典（发生在扁平结构下），将整个 record 作为 attrs
+                    if not isinstance(record.get(model_id), dict):
+                        attrs = record
                     
                     # 转换数据
                     metadata, business_data = self.transform_record(model_id, attrs, base_path)
@@ -265,6 +280,7 @@ class GenericImporter:
                         existing.annotated = metadata['annotated']
                         existing.uid = metadata['uid']
                         existing.score = metadata['score']
+                        existing.modified = metadata['modified']
                         existing.data = business_data
                         self.stats['updated'] += 1
                     else:
@@ -274,6 +290,7 @@ class GenericImporter:
                             annotated=metadata['annotated'],
                             uid=metadata['uid'],
                             score=metadata['score'],
+                            modified=metadata['modified'],
                             data=business_data
                         )
                         session.add(annotation)

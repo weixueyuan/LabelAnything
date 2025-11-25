@@ -1108,7 +1108,9 @@ def main():
     parser.add_argument('-d', '--debug', action='store_true', help='Debug模式：使用test.jsonl文件')
     parser.add_argument('--dev', action='store_true', help='开发模式：跳过登录，直接使用指定用户')
     parser.add_argument('--uid', type=str, default='dev_user', help='开发模式下的用户ID（仅在--dev模式下使用）')
-    parser.add_argument('--export-dir', type=str, default='/mnt/inspurfs/IDC_t/lvzhaoyang_group/digital_content/lianxinyu/datasets/partnet_mobility_by_category_processed', help='导出目录路径（默认为 exports）')
+    # 默认导出目录：项目根目录下的 exports 文件夹
+    default_export_dir = str(project_root / 'exports')
+    parser.add_argument('--export-dir', type=str, default=default_export_dir, help='导出目录路径（默认为项目根目录下的 exports）')
     parser.add_argument('--list-tasks', action='store_true', help='列出所有可用任务')
     
     args = parser.parse_args()

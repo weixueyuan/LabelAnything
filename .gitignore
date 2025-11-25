@@ -28,3 +28,6 @@ env/
 .DS_Store
 
 
+
+# 导出文件
+exports/

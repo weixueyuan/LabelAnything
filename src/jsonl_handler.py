@@ -19,10 +19,11 @@ class JSONLItem:
         self.annotated = data.get('annotated', False)
         self.uid = data.get('uid', '')
         self.score = data.get('score', 1)
+        self.modified = data.get('modified', False)
         
         # 业务数据（排除元数据）
         self.data = {k: v for k, v in data.items() 
-                     if k not in ['annotated', 'uid', 'score']}
+                     if k not in ['annotated', 'uid', 'score', 'modified']}
     
     def to_dict(self):
         """转换为字典"""
@@ -30,6 +31,7 @@ class JSONLItem:
             'annotated': self.annotated,
             'uid': self.uid,
             'score': self.score,
+            'modified': self.modified,
         }
         result.update(self.data)
         return result
@@ -148,15 +150,34 @@ class JSONLHandler:
                 }
                 
             item = self._data_cache[model_id]
+            
+            # 获取旧数据用于比较
+            old_data = item.data.copy() if item.data else {}
+            
+            # 从表单提交的数据中排除元数据字段
+            update_data = {k: v for k, v in data.items() if k not in ['uid', 'annotated', 'score', 'modified']}
+            
+            # 快速检查是否有变化（只检查更新的字段）
+            data_changed = False
+            for key, new_value in update_data.items():
+                old_value = old_data.get(key)
+                if old_value != new_value:
+                    data_changed = True
+                    break
+            
+            # 如果旧数据为空但新数据不为空，也算有变化
+            if not data_changed and not old_data and update_data:
+                data_changed = True
+            
+            # 更新元数据
             item.annotated = True
             item.uid = uid if uid else data.get('uid', item.uid)
             item.score = score
+            item.modified = data_changed
+            
             # 更新业务数据（合并而不是覆盖）
             if item.data is None:
                 item.data = {}
-            
-            # 从表单提交的数据中排除元数据字段
-            update_data = {k: v for k, v in data.items() if k not in ['uid', 'annotated', 'score']}
             
             # 合并新旧数据
             item.data.update(update_data)

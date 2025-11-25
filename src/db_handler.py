@@ -123,24 +123,36 @@ class DatabaseHandler:
                     "message": f"未找到ID为 {model_id} 的记录"
                 }
                 
+            # 获取旧数据（不复制，只用于比较）
+            old_data = annotation.data if annotation.data else {}
+            
+            # 从表单提交的数据中排除元数据字段
+            update_data = {k: v for k, v in data.items() if k not in ['uid', 'annotated', 'score', 'modified']}
+            
+            # 快速检查是否有变化（只检查更新的字段）
+            data_changed = False
+            for key, new_value in update_data.items():
+                old_value = old_data.get(key)
+                # 深度比较（处理列表、字典等嵌套结构）
+                if old_value != new_value:
+                    data_changed = True
+                    break
+            
+            # 如果旧数据为空但新数据不为空，也算有变化
+            if not data_changed and not old_data and update_data:
+                data_changed = True
+            
+            # 创建新数据（必须创建新对象，确保SQLAlchemy能追踪变更）
+            # 即使内容相同，也要创建新对象
+            new_data = old_data.copy() if old_data else {}
+            new_data.update(update_data)
+            
             # 更新标注状态和数据
             annotation.annotated = True  # 保存即标记为已标注
             annotation.uid = uid if uid else annotation.uid
             annotation.score = score
-            # 更新业务数据（合并而不是覆盖）
-            if annotation.data is None:
-                annotation.data = {}
-            
-            # 从表单提交的数据中排除元数据字段
-            update_data = {k: v for k, v in data.items() if k not in ['uid', 'annotated', 'score']}
-            
-            # 创建一个新的字典来合并数据，而不是在原地修改
-            # 这种方法更安全，并能确保ORM框架正确追踪变更
-            new_data = annotation.data.copy() if annotation.data else {}
-            new_data.update(update_data)
-            
-            # 将完整的新字典赋回，确保变更被正确保存
-            annotation.data = new_data
+            annotation.modified = data_changed  # 标记是否被修改
+            annotation.data = new_data  # 总是赋值新对象，确保ORM追踪变更
             
             self.session.commit()
             return {
@@ -174,15 +186,22 @@ class DatabaseHandler:
         导出数据库数据为JSONL文件
         
         Args:
-            output_dir: 输出目录，默认为 "exports"
+            output_dir: 输出目录，默认为 "exports"（相对路径会基于项目根目录）
             filter_by_user: 可选，按用户筛选
             only_annotated: 是否只导出已标注的数据
             
         Returns:
-            导出文件的路径
+            导出文件的路径（绝对路径）
         """
         import os
         from datetime import datetime
+        from pathlib import Path
+        
+        # 如果 output_dir 是相对路径，转换为绝对路径（基于项目根目录）
+        if not os.path.isabs(output_dir):
+            # 获取项目根目录（db_handler.py -> src/ -> project_root）
+            project_root = Path(__file__).parent.parent
+            output_dir = str(project_root / output_dir)
         
         # 创建导出目录
         try:
@@ -231,6 +250,7 @@ class DatabaseHandler:
                         'annotated': ann.annotated,
                         'uid': ann.uid,
                         'score': ann.score,
+                        'modified': ann.modified,
                     }
                     
                     # 直接合并数据库中存储的业务数据，不做任何转换
@@ -243,9 +263,11 @@ class DatabaseHandler:
                     line_obj = {ann.model_id: full_data}
                     f.write(json.dumps(line_obj, ensure_ascii=False) + '\n')
             
-            print(f"✅ 导出完成: {filepath}")
+            # 返回绝对路径
+            abs_filepath = os.path.abspath(filepath)
+            print(f"✅ 导出完成: {abs_filepath}")
             print(f"   共导出 {len(annotations)} 条记录")
-            return filepath
+            return abs_filepath
             
         except PermissionError as e:
             error_msg = f"写入文件 '{filepath}' 权限被拒绝"
