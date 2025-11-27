@@ -93,7 +93,6 @@ class TaskManager:
                 self.data_handler = JSONLHandler(jsonl_file)
                 self.data_source = 'jsonl'
                 self.all_data = {}
-                self.visible_keys = []
                 print(f"   ✓ 已创建空的 {jsonl_file}")
                 return
         else:
@@ -107,29 +106,28 @@ class TaskManager:
                 print(f"   请先导入数据: python -m importers.generic_importer")
                 self.data_handler = None
                 self.all_data = {}
-                self.visible_keys = []
                 return
         
         # 加载所有数据
         self.all_data = self.data_handler.load_data()
         
         # 过滤可见数据
-        self._refresh_visible_keys(user_uid)
+        visible_keys = self.get_visible_keys(user_uid)
         
         print(f"✓ 加载完成")
-        print(f"  总数: {len(self.all_data)}, 可见: {len(self.visible_keys)}")
+        print(f"  总数: {len(self.all_data)}, 可见: {len(visible_keys)}")
     
-    def _refresh_visible_keys(self, user_uid):
-        """重新计算用户可见的数据键列表"""
+    def get_visible_keys(self, user_uid):
+        """动态计算并返回用户可见的数据键列表"""
+        if not self.all_data:
+            return []
+        
         visible_keys = []
         for key, value in self.all_data.items():
             attrs = self.data_handler.parse_item(value)
             item_uid = attrs.get('uid', '')
             if not item_uid or item_uid == user_uid:
                 visible_keys.append(key)
-        
-        # 更新实例变量
-        self.visible_keys = visible_keys
         return visible_keys
     
     def build_interface(self, demo, user_state, initial_user_uid):
@@ -144,11 +142,14 @@ class TaskManager:
         
         # 用户信息
         if self.ui_config.get('show_user_info'):
-            other_count = len(self.all_data) - len(self.visible_keys)
-            self.components['user_info'] = gr.HTML(self._render_user_info(len(self.visible_keys), other_count, initial_user_uid))
+            # 动态计算
+            visible_keys = self.get_visible_keys(initial_user_uid)
+            other_count = len(self.all_data) - len(visible_keys)
+            self.components['user_info'] = gr.HTML(self._render_user_info(len(visible_keys), other_count, initial_user_uid))
         
         # State组件
         self.components['current_index'] = gr.State(value=0)
+        self.components['current_model_id_state'] = gr.State(value=None) # 新增：用于可靠地追踪当前加载的model_id
         self.components['nav_direction'] = gr.State(value="next")
         
         # 检查是否存在滑块组件
@@ -212,7 +213,8 @@ class TaskManager:
         core_inputs = {
             'user_state': user_state,
             'current_index': self.components['current_index'],
-            'model_id': self.components.get('model_id'),
+            'current_model_id': self.components['current_model_id_state'], # 使用新的State
+            'model_id_input': self.components.get('model_id'), # 搜索框的输入
             'nav_direction': self.components['nav_direction']
         }
 
@@ -257,6 +259,9 @@ class TaskManager:
         if self.has_slider:
             self.load_outputs.append(self.components['original_values_state'])
         
+        # 添加 current_model_id_state 到输出列表，确保它在加载时被更新
+        self.load_outputs.append(self.components['current_model_id_state'])
+        
         # 将滑块组件也加入 self.interactive_components
         for comp_config in self.components_config:
             if comp_config.get('type') == 'slider':
@@ -269,7 +274,7 @@ class TaskManager:
         event_inputs = [
             core_inputs['user_state'],
             core_inputs['current_index'],
-            core_inputs['model_id']
+            core_inputs['current_model_id'] # 使用新的State
         ] + self.interactive_components
         
         # 如果有滑块，将原始值状态也作为输入
@@ -283,11 +288,11 @@ class TaskManager:
                   outputs=self.load_outputs)
 
         # 搜索
-        if core_inputs['model_id']:
+        if core_inputs['model_id_input']:
             search_outputs = [core_inputs['current_index']] + self.load_outputs
-            core_inputs['model_id'].submit(
+            core_inputs['model_id_input'].submit(
                 fn=self.search_and_load,
-                inputs=[core_inputs['user_state'], core_inputs['model_id']],
+                inputs=[core_inputs['user_state'], core_inputs['model_id_input']],
                 outputs=search_outputs
             )
 
@@ -318,7 +323,7 @@ class TaskManager:
         skip_and_continue_inputs = [
             core_inputs['user_state'],
             core_inputs['current_index'],
-            core_inputs['model_id'],
+            core_inputs['current_model_id'], # 使用State
             core_inputs['nav_direction']
         ]
         skip_and_continue_outputs = [core_inputs['current_index']] + self.load_outputs + [self.components['confirm_modal']]
@@ -375,14 +380,14 @@ class TaskManager:
         print(f"\n{'='*50}")
         print(f"加载数据: index={index}, user_uid={user_uid}")
         print(f"{'='*50}")
-        self._refresh_visible_keys(user_uid)
+        visible_keys = self.get_visible_keys(user_uid)
 
         # 确定要加载的数据属性
-        is_valid_item = self.visible_keys and 0 <= index < len(self.visible_keys)
+        is_valid_item = visible_keys and 0 <= index < len(visible_keys)
         attrs = {}
         model_id = ""
         if is_valid_item:
-            model_id = self.visible_keys[index]
+            model_id = visible_keys[index]
             item = self.all_data.get(model_id)
             if item:
                 attrs = self.data_handler.parse_item(item)
@@ -392,7 +397,7 @@ class TaskManager:
                         self.data_handler.assign_to_user(model_id, user_uid)
                         # 简单刷新
                         self.all_data = self.data_handler.load_data()
-                        self._refresh_visible_keys(user_uid)
+                        # 无需再次获取 visible_keys，因为 assign 不会改变可见性
                         item = self.all_data.get(model_id)
                         attrs = self.data_handler.parse_item(item) if item else {}
 
@@ -406,6 +411,11 @@ class TaskManager:
             # 重新设计的配置查找逻辑
             is_checkbox = comp_id is not None and comp_id.endswith('_checkbox')
             lookup_id = comp_id.replace('_checkbox', '') if is_checkbox else comp_id
+            
+            # 处理 current_model_id_state
+            if comp_id is None and isinstance(comp, gr.State) and 'current_model_id_state' in self.components and comp == self.components['current_model_id_state']:
+                result.append(model_id) # 更新State
+                continue
             
             comp_config = next((c for c in self.components_config if c['id'] == lookup_id), None)
             
@@ -433,7 +443,7 @@ class TaskManager:
             elif data_field == '_computed_status':
                 result.append(self._render_status(attrs.get('annotated', False)))
             elif comp_id == 'progress_box':
-                prog = f"{index + 1} / {len(self.visible_keys)}" if is_valid_item else "0 / 0"
+                prog = f"{index + 1} / {len(visible_keys)}" if is_valid_item else "0 / 0"
                 result.append(prog)
             elif comp_id == 'scale_slider':
                 # 优先从数据库加载，如果没有或无效则默认为1.0
@@ -532,22 +542,32 @@ class TaskManager:
             print(f"⚠️  尺度计算错误: {e}")
             return original_dims
     
-    def _resolve_model(self, index, model_id):
-        """根据索引和model_id解析当前记录"""
+    def _resolve_model(self, user_uid, index, model_id):
+        """
+        根据用户、索引和model_id解析当前记录
+        - 优先使用 model_id (来自State)，因为它最可靠
+        - 其次使用 index
+        """
+        visible_keys = self.get_visible_keys(user_uid)
         resolved_model = None
         resolved_index = index
-        if model_id and model_id in self.visible_keys:
+
+        if model_id and model_id in visible_keys:
             resolved_model = model_id
-            resolved_index = self.visible_keys.index(model_id)
-        elif 0 <= index < len(self.visible_keys):
-            resolved_model = self.visible_keys[index]
-        return resolved_index, resolved_model
+            resolved_index = visible_keys.index(model_id)
+        elif 0 <= index < len(visible_keys):
+            resolved_model = visible_keys[index]
+        
+        return resolved_index, resolved_model, visible_keys
     
-    def save_data(self, user_uid, index, model_id, *values):
+    def save_data(self, user_uid, index, current_model_id, *values):
         """保存数据 (重构版)"""
-        resolved_index, resolved_model = self._resolve_model(index, model_id)
-        if resolved_model is None:
-            return self.load_data(resolved_index, user_uid)
+        # 使用 current_model_id (来自State) 作为最可靠的数据源
+        if not current_model_id:
+            print(f"⚠️ 保存失败: 当前 model_id 为空。")
+            return self.load_data(index, user_uid)
+
+        resolved_model = current_model_id
 
         # 如果有滑块，最后一个值是 original_values_state (字典)
         original_values = {}
@@ -661,14 +681,16 @@ class TaskManager:
                 self.all_data = self.data_handler.load_data()
             
             # 重新计算可见键
-            visible_keys = self._refresh_visible_keys(user_uid)
+            visible_keys = self.get_visible_keys(user_uid)
             print(f"重新计算可见键: {len(visible_keys)} 个项目")
             
             # 确保索引在有效范围内
             if resolved_model in visible_keys:
                 new_index = visible_keys.index(resolved_model)
             else:
-                new_index = min(resolved_index, len(visible_keys) - 1) if visible_keys else 0
+                # 如果因为某些原因（如数据被其他用户占用）导致当前项不再可见，
+                # 则停留在当前索引或跳转到列表末尾
+                new_index = min(index, len(visible_keys) - 1) if visible_keys else 0
             print(f"新索引: {new_index}")
             
             # 返回更新后的数据
@@ -690,30 +712,29 @@ class TaskManager:
         """
         if not search_value or not search_value.strip():
             # 空搜索，不做任何操作，保持当前数据
-            return [self.components['current_index'].value] + self.load_data(self.components['current_index'].value, user_uid)
+            current_index = self.components['current_index'].value
+            return [current_index] + self.load_data(current_index, user_uid)
         
         search_value = search_value.strip()
         
         # 确保visible_keys是最新的
-        visible_keys = self._refresh_visible_keys(user_uid)
+        visible_keys = self.get_visible_keys(user_uid)
         
         # 查找 model_id（在 visible_keys 中）
-        if search_value in self.visible_keys:
+        if search_value in visible_keys:
             # 找到了，跳转到该索引
-            new_index = self.visible_keys.index(search_value)
+            new_index = visible_keys.index(search_value)
             print(f"🔍 搜索成功: {search_value} (索引 {new_index})")
             return [new_index] + self.load_data(new_index, user_uid)
         else:
             # 未找到，提示用户，保持当前数据
             print(f"⚠️  未找到: {search_value}")
-            return [self.components['current_index'].value] + self.load_data(self.components['current_index'].value, user_uid)
+            current_index = self.components['current_index'].value
+            return [current_index] + self.load_data(current_index, user_uid)
     
-    def has_real_changes(self, user_uid, index, model_id, *values):
+    def has_real_changes(self, user_uid, index, current_model_id, *values):
         """检查当前字段值是否与数据库中的原始值不同 (重构版)"""
-        if not self.visible_keys or index >= len(self.visible_keys):
-            return False
-        
-        current_model_id = self._resolve_model(index, model_id)[1]
+        # 使用State中的model_id作为唯一真实来源
         if not current_model_id:
             return False
 
@@ -834,77 +855,68 @@ class TaskManager:
         
         return False
     
-    def check_and_nav_prev(self, user_uid, index, model_id, *values):
+    def check_and_nav_prev(self, user_uid, index, current_model_id, *values):
         """检查并导航到上一个"""
-        return self._check_and_nav(user_uid, index, model_id, "prev", *values)
+        return self._check_and_nav(user_uid, index, current_model_id, "prev", *values)
     
-    def check_and_nav_next(self, user_uid, index, model_id, *values):
+    def check_and_nav_next(self, user_uid, index, current_model_id, *values):
         """检查并导航到下一个"""
-        return self._check_and_nav(user_uid, index, model_id, "next", *values)
+        return self._check_and_nav(user_uid, index, current_model_id, "next", *values)
     
-    def _check_and_nav(self, user_uid, index, model_id, direction, *values):
+    def _check_and_nav(self, user_uid, index, current_model_id, direction, *values):
         """导航检查：对比当前值与数据库值，如果有差异显示弹窗，否则直接跳转"""
-        if self.has_real_changes(user_uid, index, model_id, *values):
+        if self.has_real_changes(user_uid, index, current_model_id, *values):
             # 有修改，显示弹窗，记录方向
-            # 返回与 nav_outputs 数量匹配的 gr.update()
             num_load_outputs = len(self.load_outputs)
             updates = [gr.update()] * (1 + num_load_outputs)  # current_index + load_outputs
             return updates + [gr.update(visible=True), gr.update(value=direction)]
         else:
             # 无修改，直接跳转并加载新数据
-            # 确保使用最新的索引
-            resolved_index, _ = self._resolve_model(index, model_id)
-            new_index, _ = self._go_direction(user_uid, resolved_index, model_id, direction)
+            new_index, _ = self._go_direction(user_uid, index, current_model_id, direction)
             new_data = self.load_data(new_index, user_uid)
             return [new_index] + new_data + [gr.update(visible=False), gr.update()]
     
-    def _go_direction(self, user_uid, index, model_id, direction):
+    def _go_direction(self, user_uid, index, current_model_id, direction):
         """根据方向导航, 返回 (new_index, new_model_id)"""
-        # 确保visible_keys是最新的
-        self._refresh_visible_keys(user_uid)
+        resolved_index, _, visible_keys = self._resolve_model(user_uid, index, current_model_id)
         
-        resolved_index, _ = self._resolve_model(index, model_id)
-        
-        # 检查visible_keys是否为空
-        if not self.visible_keys:
+        if not visible_keys:
             return 0, ""
             
         if direction == "prev":
             new_index = max(0, resolved_index - 1)
         else:
-            new_index = min(len(self.visible_keys) - 1, resolved_index + 1)
+            new_index = min(len(visible_keys) - 1, resolved_index + 1)
         
-        new_model_id = self.visible_keys[new_index] if new_index < len(self.visible_keys) else ""
+        new_model_id = visible_keys[new_index] if new_index < len(visible_keys) else ""
         return new_index, new_model_id
     
-    def save_and_continue_nav(self, direction, user_uid, index, model_id, *values):
+    def save_and_continue_nav(self, direction, user_uid, index, current_model_id, *values):
         """保存并继续 (重构版)"""
         # 先保存
-        save_result_payload = self.save_data(user_uid, index, model_id, *values)
+        save_result_payload = self.save_data(user_uid, index, current_model_id, *values)
         
         # 检查保存是否成功
         has_error = any(isinstance(item, str) and "❌ 保存失败" in item for item in save_result_payload if isinstance(item, str))
         
         if has_error:
             # 保存失败, 不导航, 保持弹窗可见, 并更新UI以显示错误信息
-            resolved_index, _ = self._resolve_model(index, model_id)
+            resolved_index, _, _ = self._resolve_model(user_uid, index, current_model_id)
             return [resolved_index] + save_result_payload + [gr.update(visible=True)]
         
         # 保存成功后，获取当前索引（可能已经在save_data中更新）
-        current_index = self.components['current_index'].value
+        # 注意：save_data 返回的 load_data 结果中，第一个元素是 new_index
+        # 但我们不能直接用，因为那是基于保存后的状态，我们需要基于导航前的状态来计算
         
         # 执行导航并加载新数据
-        new_index, _ = self._go_direction(user_uid, current_index, model_id, direction)
+        new_index, _ = self._go_direction(user_uid, index, current_model_id, direction)
         new_data = self.load_data(new_index, user_uid)
         return [new_index] + new_data + [gr.update(visible=False)]
     
-    def skip_and_continue_nav(self, user_uid, index, model_id, direction):
+    def skip_and_continue_nav(self, user_uid, index, current_model_id, direction):
         """放弃修改并继续"""
-        # 确保使用最新的索引
-        resolved_index, _ = self._resolve_model(index, model_id)
-        
         # 执行导航并加载新数据
-        new_index, _ = self._go_direction(user_uid, resolved_index, model_id, direction)
+        new_index, _ = self._go_direction(user_uid, index, current_model_id, direction)
         new_data = self.load_data(new_index, user_uid)
         return [new_index] + new_data + [gr.update(visible=False)]
     
@@ -1056,11 +1068,11 @@ def create_login_interface(auth_handler, task_config, debug, dev_user=None, expo
             if result["success"]:
                 username_value = result["user"]["username"]
                 # 重新计算可见数据, 传递用户ID
-                manager._refresh_visible_keys(username_value)
+                visible_keys = manager.get_visible_keys(username_value)
                 
                 base_return = [gr.update(value="登录成功", visible=False), gr.update(visible=False), gr.update(visible=True), username_value]
                 if has_user_info:
-                    visible_count = len(manager.visible_keys)
+                    visible_count = len(visible_keys)
                     other_count = len(manager.all_data) - visible_count
                     user_info_html = manager._render_user_info(visible_count, other_count, username_value)
                     base_return.append(gr.update(value=user_info_html))
